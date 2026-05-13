@@ -1,0 +1,25 @@
+id: "medium-010"
+name: "In-Memory Keyed Rate Limiter"
+difficulty: "medium"
+score:
+  compile: 2
+  tests:
+    allows_requests_below_limit: 2
+    blocks_requests_above_limit: 4
+    isolates_counters_by_key: 3
+    resets_after_window_advances: 3
+    is_safe_under_concurrency: 2
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

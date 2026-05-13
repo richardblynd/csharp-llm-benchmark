@@ -1,0 +1,25 @@
+id: "medium-007"
+name: "Moving Window Metrics Aggregator"
+difficulty: "medium"
+score:
+  compile: 2
+  tests:
+    aggregates_values_inside_window: 3
+    removes_expired_events: 4
+    calculates_min_max_and_average: 3
+    handles_out_of_order_events: 2
+    returns_empty_state_correctly: 1
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

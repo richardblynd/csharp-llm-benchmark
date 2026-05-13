@@ -1,0 +1,25 @@
+id: "medium-012"
+name: "Room Reservations API"
+difficulty: "medium"
+score:
+  compile: 2
+  tests:
+    post_reservations_creates_valid_reservation: 3
+    rejects_invalid_interval_with_400: 3
+    rejects_conflict_in_same_room_with_409: 5
+    accepts_same_time_in_different_rooms: 3
+    lists_room_reservations_in_order: 2
+language: "csharp"
+dotnet_version: "10"
+project_type: "webapi"
+generated_file: "Controllers/ReservationsController.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Program.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

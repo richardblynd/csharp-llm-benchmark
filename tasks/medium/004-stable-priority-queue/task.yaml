@@ -1,0 +1,25 @@
+id: "medium-004"
+name: "Stable Priority Queue"
+difficulty: "medium"
+score:
+  compile: 2
+  tests:
+    dequeues_by_priority: 3
+    preserves_insertion_order_for_equal_priorities: 4
+    peek_does_not_remove: 2
+    throws_for_empty_queue: 2
+    maintains_count: 1
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

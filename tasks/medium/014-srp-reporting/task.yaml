@@ -1,0 +1,24 @@
+id: "medium-014"
+name: "SRP Reporting Responsibilities"
+difficulty: "medium"
+score:
+  compile: 2
+  tests:
+    calculates_report_data_correctly: 3
+    formats_output_without_mixing_calculation: 3
+    isolates_output_destination_with_contract: 3
+    allows_each_responsibility_to_be_tested_separately: 3
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

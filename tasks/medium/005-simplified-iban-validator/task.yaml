@@ -1,0 +1,25 @@
+id: "medium-005"
+name: "Simplified IBAN Validator"
+difficulty: "medium"
+score:
+  compile: 2
+  tests:
+    removes_spaces_and_normalizes_case: 2
+    validates_characters_and_length: 3
+    implements_mod97_without_overflow: 5
+    formats_in_groups_of_four: 2
+    rejects_null_or_empty_input: 2
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

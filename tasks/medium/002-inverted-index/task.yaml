@@ -1,0 +1,25 @@
+id: "medium-002"
+name: "Inverted Document Index"
+difficulty: "medium"
+score:
+  compile: 2
+  tests:
+    indexes_basic_documents: 3
+    normalizes_case_and_punctuation: 3
+    avoids_duplicate_document_ids_per_term: 2
+    searches_multiple_terms_by_intersection: 4
+    returns_empty_for_missing_terms: 1
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

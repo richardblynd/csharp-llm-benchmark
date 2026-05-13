@@ -1,0 +1,25 @@
+llm:
+  base_url: "http://localhost:1234/v1"
+  api_key: "lm-studio"
+  model: "local-model-name"
+  temperature: 0.0
+  seed: 42
+  timeout_seconds: 120
+
+benchmark:
+  difficulty: "easy"
+  output_dir: "results"
+  max_attempts_per_task: 1
+  # Optional: run only one task from the selected difficulty.
+  # task_id: "easy-001"
+
+docker:
+  image: "csharp-llm-benchmark-dotnet10"
+  timeout_seconds: 60
+  memory_limit: "512m"
+  cpus: "1.0"
+  pids_limit: 200
+  network: "none"
+  read_only: true
+  cap_drop:
+    - "ALL"

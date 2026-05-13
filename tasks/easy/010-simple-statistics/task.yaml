@@ -1,0 +1,24 @@
+id: "easy-010"
+name: "Simple Statistics"
+difficulty: "easy"
+score:
+  compile: 1
+  tests:
+    returns_count_average_min_and_max: 3
+    handles_single_value: 2
+    handles_negative_values: 2
+    returns_zeroes_for_empty_input: 2
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

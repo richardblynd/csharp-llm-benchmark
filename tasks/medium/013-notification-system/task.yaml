@@ -1,0 +1,25 @@
+id: "medium-013"
+name: "Object-Oriented Notification System"
+difficulty: "medium"
+score:
+  compile: 2
+  tests:
+    defines_common_notification_channel_contract: 3
+    implements_specific_channel_behaviors: 4
+    uses_polymorphism_with_custom_channel: 4
+    uses_composition_to_orchestrate_channels: 3
+    handles_unavailable_or_failed_channels_predictably: 2
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

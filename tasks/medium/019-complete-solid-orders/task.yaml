@@ -1,0 +1,25 @@
+id: "medium-019"
+name: "Complete SOLID Order Refactoring"
+difficulty: "medium"
+score:
+  compile: 2
+  tests:
+    separates_main_responsibilities: 4
+    extends_discount_and_shipping_without_changing_processor: 4
+    keeps_pricing_rules_substitutable: 3
+    uses_small_interfaces_for_receipt_and_persistence: 3
+    depends_on_testable_abstractions: 4
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

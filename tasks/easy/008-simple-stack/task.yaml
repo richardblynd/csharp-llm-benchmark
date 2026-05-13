@@ -1,0 +1,24 @@
+id: "easy-008"
+name: "Simple Stack"
+difficulty: "easy"
+score:
+  compile: 1
+  tests:
+    pushes_and_pops_in_lifo_order: 2
+    peek_does_not_remove_item: 1
+    count_tracks_items: 1
+    throws_when_empty: 1
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

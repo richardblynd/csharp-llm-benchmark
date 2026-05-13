@@ -1,0 +1,25 @@
+id: "medium-001"
+name: "LRU Cache"
+difficulty: "medium"
+score:
+  compile: 2
+  tests:
+    stores_and_retrieves_values: 2
+    updates_existing_item_without_duplicating: 3
+    evicts_least_recently_used_item: 4
+    get_updates_recency: 3
+    rejects_invalid_capacity: 2
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

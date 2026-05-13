@@ -1,0 +1,25 @@
+id: "medium-003"
+name: "Interval Conflict Scheduler"
+difficulty: "medium"
+score:
+  compile: 2
+  tests:
+    accepts_non_conflicting_events: 2
+    rejects_partial_overlap: 4
+    allows_adjacent_events: 3
+    lists_events_in_chronological_order: 2
+    validates_invalid_interval: 2
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

@@ -1,0 +1,24 @@
+id: "easy-009"
+name: "Multi-field Object Sort"
+difficulty: "easy"
+score:
+  compile: 1
+  tests:
+    sorts_by_last_name: 2
+    sorts_by_first_name_when_last_name_matches: 1
+    sorts_by_age_descending_when_names_match: 1
+    does_not_mutate_input_order: 1
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

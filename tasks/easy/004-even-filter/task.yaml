@@ -1,0 +1,23 @@
+id: "easy-004"
+name: "Even Number Filter"
+difficulty: "easy"
+score:
+  compile: 1
+  tests:
+    keeps_only_even_numbers: 1
+    preserves_original_order: 1
+    returns_empty_when_no_even_numbers: 1
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

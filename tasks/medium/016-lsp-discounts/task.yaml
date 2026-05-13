@@ -1,0 +1,24 @@
+id: "medium-016"
+name: "LSP Discount Rules"
+difficulty: "medium"
+score:
+  compile: 2
+  tests:
+    applies_concrete_rules_correctly: 3
+    maintains_common_contract_invariants: 4
+    allows_rule_substitution_in_consumer: 3
+    handles_boundary_inputs_consistently: 2
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

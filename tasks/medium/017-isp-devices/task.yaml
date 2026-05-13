@@ -1,0 +1,24 @@
+id: "medium-017"
+name: "ISP Device Contracts"
+difficulty: "medium"
+score:
+  compile: 2
+  tests:
+    defines_small_capability_interfaces: 4
+    implements_devices_with_real_capabilities_only: 3
+    consumers_depend_only_on_needed_contract: 3
+    avoids_unsupported_methods_on_general_contracts: 2
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'
