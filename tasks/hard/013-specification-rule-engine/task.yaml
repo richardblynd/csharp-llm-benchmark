@@ -1,0 +1,26 @@
+id: "hard-013"
+name: "Specification Rule Engine"
+difficulty: "hard"
+score:
+  compile: 2
+  tests:
+    evaluates_simple_expression_specifications: 3
+    combines_rules_with_and_or_not: 5
+    preserves_short_circuit_for_in_memory_evaluation: 3
+    builds_equivalent_expression_tree: 5
+    allows_custom_specifications_without_engine_changes: 4
+    reports_non_convertible_rules_clearly: 3
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

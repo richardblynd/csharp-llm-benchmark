@@ -45,7 +45,9 @@ Rules:
 - All code, public identifiers, exception messages and comments must be written in English.
 - `NotificationMessage` must contain recipient, subject and body data.
 - `INotificationChannel` must define a common contract used by all channels.
-- Email, SMS and push channels must return channel-specific successful delivery results.
+- Email, SMS and push channels must return successful delivery results whose `Channel` values are exactly `email`, `sms` and `push`, respectively.
+- Successful channel results must use the message recipient as the delivery target.
 - `NotificationRouter` must receive channels through composition, use them polymorphically, and send a message through all available channels.
+- `NotificationRouter` must return delivery results in the same order as the supplied channel collection.
 - The router must work with new custom `INotificationChannel` implementations without changing router code.
-- Unavailable channels or channel failures must produce predictable failed delivery results instead of crashing the whole send operation.
+- Unavailable channels or channel failures must produce predictable failed delivery results using the channel `Name` instead of crashing the whole send operation.

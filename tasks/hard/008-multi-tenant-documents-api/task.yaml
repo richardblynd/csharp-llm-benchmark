@@ -1,0 +1,27 @@
+id: "hard-008"
+name: "Multi-Tenant Documents API With ETags"
+difficulty: "hard"
+score:
+  compile: 2
+  tests:
+    creates_and_reads_document_within_tenant: 3
+    isolates_documents_between_tenants: 4
+    returns_etag_on_create_and_get: 3
+    updates_with_matching_etag: 4
+    rejects_stale_etag_with_precondition_failed: 5
+    validates_input_and_inconsistent_ids: 3
+    lists_documents_for_tenant_in_deterministic_order: 2
+language: "csharp"
+dotnet_version: "10"
+project_type: "webapi"
+generated_file: "Controllers/DocumentsController.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Program.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

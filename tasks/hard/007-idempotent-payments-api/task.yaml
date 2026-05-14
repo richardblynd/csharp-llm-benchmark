@@ -1,0 +1,27 @@
+id: "hard-007"
+name: "Idempotent Payments API"
+difficulty: "hard"
+score:
+  compile: 2
+  tests:
+    creates_valid_payment_with_created_response: 3
+    rejects_invalid_payload_with_bad_request: 3
+    reuses_response_for_same_key_and_payload: 5
+    rejects_same_key_with_different_payload: 4
+    prevents_duplicate_charges_under_concurrency: 6
+    gets_payment_by_id: 2
+    isolates_state_between_factories: 2
+language: "csharp"
+dotnet_version: "10"
+project_type: "webapi"
+generated_file: "Controllers/PaymentsController.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Program.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

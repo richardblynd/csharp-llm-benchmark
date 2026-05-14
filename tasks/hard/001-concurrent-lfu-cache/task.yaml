@@ -1,0 +1,26 @@
+id: "hard-001"
+name: "Concurrent LFU Cache With Single-Flight Refresh"
+difficulty: "hard"
+score:
+  compile: 2
+  tests:
+    stores_and_returns_values_before_ttl: 3
+    expires_entries_using_injected_clock: 4
+    evicts_by_frequency_then_recency: 6
+    coalesces_concurrent_loads_for_same_key: 6
+    loader_failure_does_not_poison_cache: 4
+    validates_capacity_and_ttl: 3
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

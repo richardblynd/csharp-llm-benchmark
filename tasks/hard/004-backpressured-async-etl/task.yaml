@@ -1,0 +1,27 @@
+id: "hard-004"
+name: "Backpressured Async ETL Pipeline"
+difficulty: "hard"
+score:
+  compile: 2
+  tests:
+    processes_valid_records_in_order: 3
+    records_item_errors_without_stopping_batch: 4
+    respects_buffer_capacity_while_writer_is_blocked: 5
+    honors_cancellation_with_partial_report: 4
+    writes_records_in_configured_batches: 4
+    exposes_separate_contracts_for_pipeline_parts: 4
+    handles_empty_input: 2
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

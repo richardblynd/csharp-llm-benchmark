@@ -1,0 +1,27 @@
+id: "hard-005"
+name: "Priority Job Scheduler With Dependencies"
+difficulty: "hard"
+score:
+  compile: 2
+  tests:
+    runs_ready_jobs_by_priority: 4
+    waits_for_successful_dependencies: 5
+    enforces_max_parallelism: 5
+    retries_failed_jobs_to_configured_limit: 4
+    skips_dependents_after_failed_dependency: 4
+    honors_cancellation: 4
+    detects_dependency_cycles_before_running: 2
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

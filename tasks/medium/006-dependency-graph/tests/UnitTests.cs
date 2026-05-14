@@ -3,6 +3,24 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 [TestClass]
 public class UnitTests
 {
+    private static void AssertThrowsArgumentException(Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch (ArgumentException)
+        {
+            return;
+        }
+        catch (Exception exception)
+        {
+            Assert.Fail($"Expected ArgumentException or a derived type, but {exception.GetType().Name} was thrown.");
+        }
+
+        Assert.Fail("Expected ArgumentException or a derived type, but no exception was thrown.");
+    }
+
     [TestMethod]
     public void sorts_simple_graph()
     {
@@ -44,7 +62,7 @@ public class UnitTests
         var graph = new global::DependencyGraph();
         graph.AddItem("app");
 
-        Assert.ThrowsException<ArgumentException>(() => graph.AddDependency("app", "missing"));
+        AssertThrowsArgumentException(() => graph.AddDependency("app", "missing"));
     }
 
     [TestMethod]

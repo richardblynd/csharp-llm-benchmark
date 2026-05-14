@@ -3,6 +3,24 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 [TestClass]
 public class UnitTests
 {
+    private static void AssertThrowsArgumentException(Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch (ArgumentException)
+        {
+            return;
+        }
+        catch (Exception exception)
+        {
+            Assert.Fail($"Expected ArgumentException or a derived type, but {exception.GetType().Name} was thrown.");
+        }
+
+        Assert.Fail("Expected ArgumentException or a derived type, but no exception was thrown.");
+    }
+
     [TestMethod]
     public void accepts_non_conflicting_events()
     {
@@ -43,6 +61,6 @@ public class UnitTests
     public void validates_invalid_interval()
     {
         var scheduler = new global::CalendarScheduler();
-        Assert.ThrowsException<ArgumentException>(() => scheduler.AddEvent("bad", DateTime.Today, DateTime.Today));
+        AssertThrowsArgumentException(() => scheduler.AddEvent("bad", DateTime.Today, DateTime.Today));
     }
 }

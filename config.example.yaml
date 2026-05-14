@@ -7,10 +7,12 @@ llm:
   timeout_seconds: 120
 
 benchmark:
-  difficulty: "easy"
+  # Optional: choose "easy", "medium", "hard" or "all".
+  # Omit or use "all" to run every difficulty.
+  difficulty: "all"
   output_dir: "results"
   max_attempts_per_task: 1
-  # Optional: run only one task from the selected difficulty.
+  # Optional: run only one task from the selected difficulty scope.
   # task_id: "easy-001"
 
 docker:

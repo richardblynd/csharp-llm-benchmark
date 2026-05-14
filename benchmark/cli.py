@@ -34,14 +34,29 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
 
     list_tasks = subparsers.add_parser("list-tasks", help="List benchmark tasks")
-    list_tasks.add_argument("--difficulty", default="easy")
+    list_tasks.add_argument(
+        "--difficulty",
+        help="Task difficulty to list. Omit or use 'all' to list every difficulty.",
+    )
 
     validate = subparsers.add_parser("validate", help="Validate task metadata")
-    validate.add_argument("--difficulty", default="easy")
+    validate.add_argument(
+        "--difficulty",
+        help=(
+            "Task difficulty to validate. Omit or use 'all' to validate every "
+            "difficulty."
+        ),
+    )
 
     run = subparsers.add_parser("run", help="Run the benchmark")
     run.add_argument("--config", type=Path, default=Path("config.example.yaml"))
-    run.add_argument("--difficulty")
+    run.add_argument(
+        "--difficulty",
+        help=(
+            "Task difficulty to run. Omit from both CLI and config, or use "
+            "'all', to run every difficulty."
+        ),
+    )
     run.add_argument("--output-dir")
     run.add_argument("--base-url")
     run.add_argument("--api-key")
@@ -64,7 +79,7 @@ def _validate(args: argparse.Namespace) -> int:
         for error in errors:
             print(error, file=sys.stderr)
         return 1
-    print(f"Validated {len(tasks)} {args.difficulty} task(s).")
+    print(f"Validated {len(tasks)} task(s) {_format_difficulty(args.difficulty)}.")
     return 0
 
 
@@ -124,11 +139,9 @@ def _run(args: argparse.Namespace) -> int:
         task_score = score_task(task, result)
         task_scores.append(task_score)
 
-        print(
-            f"  {result.status}: {task_score.earned_points:g}/{task_score.available_points:g} "
-            f"(LLM {task_score.llm_response_time_seconds:.2f}s, "
-            f"{_format_tokens(task_score.llm_usage.total_tokens)})"
-        )
+        print(f"  {result.status}: {task_score.earned_points:g}/{task_score.available_points:g}")
+        print(f"  LLM: {task_score.llm_response_time_seconds:.2f}s")
+        print(f"  Tokens: {_format_tokens(task_score.llm_usage.total_tokens)}")
 
     benchmark_score = score_benchmark(task_scores)
     write_summary(
@@ -160,6 +173,12 @@ def _filter_tasks(tasks, task_id: str | None):
         return matches
     available = ", ".join(task.id for task in tasks)
     raise ValueError(f"Task id not found: {task_id}. Available ids: {available}")
+
+
+def _format_difficulty(difficulty: str | None) -> str:
+    if difficulty is None or difficulty.strip().lower() == "all":
+        return "across all difficulties"
+    return f"for difficulty '{difficulty}'"
 
 
 def _sum_known_tokens(values) -> int | None:

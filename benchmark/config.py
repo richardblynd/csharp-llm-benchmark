@@ -20,7 +20,7 @@ class LlmConfig:
 
 @dataclass(frozen=True)
 class BenchmarkConfig:
-    difficulty: str = "easy"
+    difficulty: str | None = None
     output_dir: Path = Path("results")
     max_attempts_per_task: int = 1
     task_id: str | None = None
@@ -72,9 +72,7 @@ def load_config(path: Path | None) -> AppConfig:
             ),
         ),
         benchmark=BenchmarkConfig(
-            difficulty=str(
-                benchmark_data.get("difficulty", BenchmarkConfig.difficulty)
-            ),
+            difficulty=_optional_string(benchmark_data.get("difficulty")),
             output_dir=Path(
                 str(benchmark_data.get("output_dir", BenchmarkConfig.output_dir))
             ),
@@ -123,7 +121,11 @@ def apply_cli_overrides(
             timeout_seconds=config.llm.timeout_seconds,
         ),
         benchmark=BenchmarkConfig(
-            difficulty=difficulty or config.benchmark.difficulty,
+            difficulty=(
+                _optional_string(difficulty)
+                if difficulty is not None
+                else config.benchmark.difficulty
+            ),
             output_dir=Path(output_dir) if output_dir else config.benchmark.output_dir,
             max_attempts_per_task=config.benchmark.max_attempts_per_task,
             task_id=task_id if task_id is not None else config.benchmark.task_id,

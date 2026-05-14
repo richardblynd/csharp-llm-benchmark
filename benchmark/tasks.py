@@ -6,6 +6,8 @@ from typing import Any
 
 from benchmark.simple_yaml import load_yaml
 
+DEFAULT_DIFFICULTY_ORDER = ("easy", "medium", "hard")
+
 
 @dataclass(frozen=True)
 class ScoreConfig:
@@ -44,9 +46,22 @@ class Task:
 
 
 def load_tasks(
-    difficulty: str,
+    difficulty: str | None = None,
     *,
     tasks_root: Path = Path("tasks"),
+) -> list[Task]:
+    if _is_all_difficulties(difficulty):
+        tasks: list[Task] = []
+        for difficulty_name in _discover_difficulties(tasks_root):
+            tasks.extend(_load_tasks_from_difficulty(difficulty_name, tasks_root))
+        return tasks
+
+    return _load_tasks_from_difficulty(str(difficulty), tasks_root)
+
+
+def _load_tasks_from_difficulty(
+    difficulty: str,
+    tasks_root: Path,
 ) -> list[Task]:
     difficulty_dir = tasks_root / difficulty
     if not difficulty_dir.exists():
@@ -59,6 +74,22 @@ def load_tasks(
             continue
         tasks.append(_load_task(task_dir, load_yaml(task_file)))
     return tasks
+
+
+def _is_all_difficulties(difficulty: str | None) -> bool:
+    return difficulty is None or difficulty.strip().lower() == "all"
+
+
+def _discover_difficulties(tasks_root: Path) -> tuple[str, ...]:
+    if not tasks_root.exists():
+        raise FileNotFoundError(f"Task root directory not found: {tasks_root}")
+
+    discovered = {path.name for path in tasks_root.iterdir() if path.is_dir()}
+    ordered = [
+        difficulty for difficulty in DEFAULT_DIFFICULTY_ORDER if difficulty in discovered
+    ]
+    ordered.extend(sorted(discovered - set(DEFAULT_DIFFICULTY_ORDER)))
+    return tuple(ordered)
 
 
 def validate_tasks(tasks: list[Task]) -> list[str]:

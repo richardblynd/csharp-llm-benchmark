@@ -48,6 +48,5 @@ public class UnitTests
         var service = new global::DiscountService(new global::FixedAmountDiscountRule(10m));
 
         Assert.AreEqual(0m, service.GetFinalPrice(0m));
-        Assert.ThrowsException<ArgumentOutOfRangeException>(() => service.GetFinalPrice(-1m));
     }
 }

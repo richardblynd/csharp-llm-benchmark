@@ -1,0 +1,26 @@
+id: "hard-003"
+name: "Incremental Dependency Planner"
+difficulty: "hard"
+score:
+  compile: 2
+  tests:
+    orders_acyclic_dependencies: 4
+    uses_deterministic_priority_then_id_order: 3
+    detects_cycle_with_diagnostic_path: 5
+    detects_missing_dependency: 3
+    updates_plan_after_dependency_changes: 4
+    separates_affected_and_unaffected_items: 4
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'
