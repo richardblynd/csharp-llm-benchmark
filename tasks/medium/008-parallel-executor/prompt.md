@@ -11,8 +11,6 @@ public static Task<IReadOnlyList<TResult>> ExecuteAsync<TInput, TResult>(
 ```
 
 Rules:
-- Do not include a namespace.
-- Do not use external libraries.
 - All code, public identifiers, exception messages and comments must be written in English.
 - Execute at most `maxConcurrency` operations at the same time.
 - Preserve input order in the returned results.

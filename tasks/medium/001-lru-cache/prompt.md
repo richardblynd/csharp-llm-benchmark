@@ -11,8 +11,6 @@ public void Put(TKey key, TValue value)
 ```
 
 Rules:
-- Do not include a namespace.
-- Do not use external libraries.
 - All code, public identifiers, exception messages and comments must be written in English.
 - The cache has a fixed positive capacity. Throw `ArgumentOutOfRangeException` for capacities less than `1`.
 - `Put` inserts or updates a value. Updating an existing key must not increase `Count`.

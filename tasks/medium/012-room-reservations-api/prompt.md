@@ -16,8 +16,6 @@ public sealed record ReservationDto(string Id, string RoomId, DateTime Start, Da
 ```
 
 Rules:
-- Do not include a namespace.
-- Do not use external libraries.
 - All code, public identifiers, exception messages and comments must be written in English.
 - Reservation JSON fields are `id`, `roomId`, `start` and `end`.
 - Reject blank ids or room ids, and reject intervals where `end <= start`, with `400`.

@@ -33,8 +33,6 @@ public sealed class InMemoryDatabase
 ```
 
 Rules:
-- Do not include a namespace.
-- Do not use external libraries.
 - All code, public identifiers, exception messages and comments must be written in English.
 - Entity ids must be non-empty after trimming.
 - Changes are private to a unit of work until `Commit`.

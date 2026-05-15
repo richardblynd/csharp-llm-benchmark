@@ -35,8 +35,6 @@ public sealed class ScanService
 ```
 
 Rules:
-- Do not include a namespace.
-- Do not use external libraries.
 - All code, public identifiers, exception messages and comments must be written in English.
 - Keep printing, scanning and faxing in separate interfaces.
 - `BasicPrinter` must implement only printing.

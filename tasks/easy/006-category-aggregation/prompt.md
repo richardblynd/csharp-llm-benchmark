@@ -19,5 +19,3 @@ Rules:
 - Trim category names before grouping.
 - Ignore items whose category is null, empty, or whitespace.
 - Preserve category casing after trimming.
-- Do not include a namespace.
-- Do not use external libraries.

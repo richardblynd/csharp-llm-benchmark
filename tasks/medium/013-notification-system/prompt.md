@@ -40,8 +40,6 @@ public sealed class NotificationRouter
 ```
 
 Rules:
-- Do not include a namespace.
-- Do not use external libraries.
 - All code, public identifiers, exception messages and comments must be written in English.
 - `NotificationMessage` must contain recipient, subject and body data.
 - `INotificationChannel` must define a common contract used by all channels.

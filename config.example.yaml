@@ -12,6 +12,9 @@ benchmark:
   difficulty: "all"
   output_dir: "results"
   max_attempts_per_task: 1
+  # Runs Docker build/test evaluations in the background while the next task is
+  # generated. Increase if the machine can run multiple evaluation containers.
+  evaluation_workers: 1
   # Optional: run only one task from the selected difficulty scope.
   # task_id: "easy-001"
 

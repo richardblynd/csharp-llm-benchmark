@@ -65,8 +65,6 @@ public sealed class OrderProcessor
 ```
 
 Rules:
-- Do not include a namespace.
-- Do not use external libraries.
 - All code, public identifiers, exception messages and comments must be written in English.
 - Separate pricing, discount, shipping, receipt writing and persistence responsibilities.
 - `OrderProcessor` must depend on abstractions, not concrete implementations.

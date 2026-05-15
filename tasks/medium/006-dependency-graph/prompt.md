@@ -9,8 +9,6 @@ public IReadOnlyList<string> GetExecutionOrder()
 ```
 
 Rules:
-- Do not include a namespace.
-- Do not use external libraries.
 - All code, public identifiers, exception messages and comments must be written in English.
 - `AddDependency("app", "lib")` means `lib` must appear before `app`.
 - Throw an argument exception if a dependency references an item that has not been added.

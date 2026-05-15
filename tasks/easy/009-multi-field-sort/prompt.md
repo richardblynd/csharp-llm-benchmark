@@ -20,5 +20,3 @@ Return a new list sorted by `LastName` ascending, then `FirstName` ascending, th
 Rules:
 - Use ordinal string comparison.
 - Do not mutate the input collection.
-- Do not include a namespace.
-- Do not use external libraries.

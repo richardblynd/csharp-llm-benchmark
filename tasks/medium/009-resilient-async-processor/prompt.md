@@ -20,8 +20,6 @@ public int Attempts { get; }
 ```
 
 Rules:
-- Do not include a namespace.
-- Do not use external libraries.
 - All code, public identifiers, exception messages and comments must be written in English.
 - Process items in input order and return results in input order.
 - Retry a failed item until it succeeds or reaches `maxAttempts`.

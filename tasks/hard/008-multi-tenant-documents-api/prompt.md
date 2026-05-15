@@ -3,7 +3,6 @@ Write a multi-tenant in-memory documents API with ETag concurrency.
 The generated file must be `Controllers/DocumentsController.cs`.
 
 Required behavior:
-- Do not include a namespace.
 - Do not use external services, external storage or network calls.
 - All code, public identifiers, exception messages and comments must be written in English.
 - Use controllers and the `DocumentStore` service registered by `Program.cs`.

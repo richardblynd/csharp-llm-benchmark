@@ -28,8 +28,6 @@ public sealed class DiscountService
 ```
 
 Rules:
-- Do not include a namespace.
-- Do not use external libraries.
 - All code, public identifiers, exception messages and comments must be written in English.
 - `IDiscountRule` must expose a method that returns the discount amount for a valid price.
 - Valid prices are zero or positive.

@@ -9,8 +9,6 @@ public IReadOnlyList<string> SearchAll(IEnumerable<string> terms)
 ```
 
 Rules:
-- Do not include a namespace.
-- Do not use external libraries.
 - All code, public identifiers, exception messages and comments must be written in English.
 - Terms are case-insensitive.
 - Treat letters and digits as term characters. Treat punctuation and whitespace as separators.

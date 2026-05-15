@@ -19,5 +19,3 @@ Return count, arithmetic average, minimum, and maximum for `values`.
 
 Rules:
 - If `values` is empty, return zero for all properties.
-- Do not include a namespace.
-- Do not use external libraries.

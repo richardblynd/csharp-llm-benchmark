@@ -11,15 +11,12 @@ from typing import Any
 from benchmark.config import LlmConfig
 
 
-SYSTEM_PROMPT = """You are an expert C# developer solving coding tasks.
-Write clean, efficient C# code targeting .NET 10.
-Return a complete C# source file that compiles as-is.
-Include required using directives for .NET framework types, or fully qualify those types.
-Output ONLY the raw C# code inside a markdown block.
-Do not use external libraries.
-Do not include a namespace.
-Do not include comments in the generated code.
-Do not include explanations, greetings, or pleasantries."""
+SYSTEM_PROMPT = """Generate one complete C# source file targeting .NET 10.
+Return exactly one fenced ```csharp code block, with no text outside it.
+Do not declare a C# namespace; top-level using directives are allowed.
+Use only the .NET SDK/BCL; do not use third-party or NuGet packages.
+Do not include comments, explanations, greetings, or pleasantries.
+Follow the task contract exactly."""
 
 
 @dataclass(frozen=True)

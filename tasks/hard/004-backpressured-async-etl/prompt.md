@@ -41,8 +41,6 @@ public sealed class BackpressuredEtlPipeline<TInput, TOutput>
 ```
 
 Rules:
-- Do not include a namespace.
-- Do not use external libraries.
 - All code, public identifiers, exception messages and comments must be written in English.
 - `BatchSize` and `BufferCapacity` must be positive.
 - The pipeline must keep the input order for valid transformed records.

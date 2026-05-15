@@ -24,6 +24,7 @@ class BenchmarkConfig:
     output_dir: Path = Path("results")
     max_attempts_per_task: int = 1
     task_id: str | None = None
+    evaluation_workers: int = 1
 
 
 @dataclass(frozen=True)
@@ -83,6 +84,13 @@ def load_config(path: Path | None) -> AppConfig:
                 )
             ),
             task_id=_optional_string(benchmark_data.get("task_id")),
+            evaluation_workers=_positive_int(
+                benchmark_data.get(
+                    "evaluation_workers",
+                    BenchmarkConfig.evaluation_workers,
+                ),
+                "benchmark.evaluation_workers",
+            ),
         ),
         docker=DockerConfig(
             image=str(docker_data.get("image", DockerConfig.image)),
@@ -110,6 +118,7 @@ def apply_cli_overrides(
     difficulty: str | None = None,
     output_dir: str | None = None,
     task_id: str | None = None,
+    evaluation_workers: int | None = None,
 ) -> AppConfig:
     return AppConfig(
         llm=LlmConfig(
@@ -129,6 +138,11 @@ def apply_cli_overrides(
             output_dir=Path(output_dir) if output_dir else config.benchmark.output_dir,
             max_attempts_per_task=config.benchmark.max_attempts_per_task,
             task_id=task_id if task_id is not None else config.benchmark.task_id,
+            evaluation_workers=(
+                _positive_int(evaluation_workers, "benchmark.evaluation_workers")
+                if evaluation_workers is not None
+                else config.benchmark.evaluation_workers
+            ),
         ),
         docker=config.docker,
     )
@@ -139,3 +153,10 @@ def _optional_string(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _positive_int(value: Any, name: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise ValueError(f"{name} must be at least 1")
+    return number

@@ -10,5 +10,3 @@ Rules:
 - A word is a consecutive run of letters or digits.
 - Matching is case-insensitive; dictionary keys must be lowercase invariant.
 - Punctuation and whitespace are separators.
-- Do not include a namespace.
-- Do not use external libraries.

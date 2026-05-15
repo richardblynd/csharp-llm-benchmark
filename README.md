@@ -52,6 +52,15 @@ Run a single task:
 python -m benchmark.cli run --config config.yaml --difficulty easy --task-id easy-001
 ```
 
+The runner pipelines generation and evaluation: after a task is generated, its
+Docker build/tests run in the background while the next task is generated. By
+default one evaluation runs at a time. To allow multiple Docker evaluations at
+once:
+
+```bash
+python -m benchmark.cli run --config config.yaml --evaluation-workers 2
+```
+
 Reports are written under `results/<timestamp>/`.
 
 ## Useful commands
@@ -91,11 +100,12 @@ benchmark:
 
 ## Notes
 
-- The LLM only receives `prompt.md` for each task.
+- The LLM receives a fixed system prompt plus `prompt.md` for each task.
 - Hidden tests are copied into an isolated temporary workspace only during
   evaluation.
-- Generated C# must follow each task prompt and avoid namespaces unless the
-  prompt explicitly says otherwise.
+- The system prompt provides shared output and structure rules: generated C#
+  must be a single fenced `csharp` block, avoid C# namespaces, may use standard
+  .NET SDK libraries, and must not use third-party/NuGet packages.
 - Medium tasks include data structures, algorithms, async/concurrency, in-memory
   ASP.NET Core APIs, OOP and SOLID exercises.
 - Hard tasks add denser deterministic exercises covering LFU caching with

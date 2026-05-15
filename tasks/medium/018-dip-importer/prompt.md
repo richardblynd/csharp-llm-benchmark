@@ -40,8 +40,6 @@ public sealed class RecordImporter
 ```
 
 Rules:
-- Do not include a namespace.
-- Do not use external libraries.
 - All code, public identifiers, exception messages and comments must be written in English.
 - `RecordImporter` must depend on abstractions for reading, validation and persistence.
 - It must read all records, validate each record, save only valid records and continue after invalid records.

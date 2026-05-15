@@ -10,5 +10,3 @@ the total number of whole hours and `MM` is minutes padded to two digits.
 Rules:
 - `0` returns `0:00`.
 - Negative values must throw `ArgumentOutOfRangeException`.
-- Do not include a namespace.
-- Do not use external libraries.

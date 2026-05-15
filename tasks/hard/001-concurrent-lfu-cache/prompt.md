@@ -28,8 +28,6 @@ public sealed class ConcurrentLfuCache<TKey, TValue> where TKey : notnull
 ```
 
 Rules:
-- Do not include a namespace.
-- Do not use external libraries.
 - All code, public identifiers, exception messages and comments must be written in English.
 - `capacity` must be positive and `timeToLive` must be greater than zero.
 - Entries expire when the injected clock reaches or passes their expiration instant.

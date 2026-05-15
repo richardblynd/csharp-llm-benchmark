@@ -10,8 +10,6 @@ public T Dequeue()
 ```
 
 Rules:
-- Do not include a namespace.
-- Do not use external libraries.
 - All code, public identifiers, exception messages and comments must be written in English.
 - Smaller numeric priority values are dequeued first.
 - Items with the same priority must be dequeued in insertion order.

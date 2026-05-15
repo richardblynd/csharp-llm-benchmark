@@ -17,7 +17,3 @@ public static decimal Execute(Product product)
 Return the final price after applying `DiscountPercentage` to `Price`. Round the
 result to two decimal places using `MidpointRounding.AwayFromZero`. A discount of
 `100` returns `0`.
-
-Rules:
-- Do not include a namespace.
-- Do not use external libraries.

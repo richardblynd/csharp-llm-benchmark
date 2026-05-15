@@ -36,8 +36,6 @@ public static class Specification
 ```
 
 Rules:
-- Do not include a namespace.
-- Do not use external libraries.
 - All code, public identifiers, exception messages and comments must be written in English.
 - `And`, `Or` and `Not` must be composable without modifying existing specification classes.
 - In-memory evaluation must preserve normal C# short-circuit behavior for `And` and `Or`.

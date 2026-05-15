@@ -33,8 +33,6 @@ public sealed class DependencyPlanner
 ```
 
 Rules:
-- Do not include a namespace.
-- Do not use external libraries.
 - All code, public identifiers, exception messages and comments must be written in English.
 - Item ids must be non-empty after trimming.
 - `BuildPlan` returns item ids in dependency order: dependencies appear before the items that depend on them.

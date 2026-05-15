@@ -36,8 +36,6 @@ public sealed class PriorityJobScheduler
 ```
 
 Rules:
-- Do not include a namespace.
-- Do not use external libraries.
 - All code, public identifiers, exception messages and comments must be written in English.
 - Job ids must be non-empty and unique.
 - `maxDegreeOfParallelism` and `MaxAttempts` must be positive.

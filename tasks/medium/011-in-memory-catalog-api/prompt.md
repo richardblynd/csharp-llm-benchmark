@@ -18,8 +18,6 @@ public sealed record ProductDto(string Id, string Name, decimal Price);
 ```
 
 Rules:
-- Do not include a namespace.
-- Do not use external libraries.
 - All code, public identifiers, exception messages and comments must be written in English.
 - Product JSON fields are `id`, `name` and `price`.
 - Reject blank names and negative prices with `400`.

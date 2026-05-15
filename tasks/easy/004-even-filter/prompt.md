@@ -8,6 +8,4 @@ Return a new list containing only the even numbers from `numbers`, preserving
 their original order.
 
 Rules:
-- Do not include a namespace.
-- Do not use external libraries.
 - Zero is even.

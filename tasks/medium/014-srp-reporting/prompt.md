@@ -42,8 +42,6 @@ public sealed class ReportService
 ```
 
 Rules:
-- Do not include a namespace.
-- Do not use external libraries.
 - All code, public identifiers, exception messages and comments must be written in English.
 - `ReportCalculator` calculates count, total and average from sales records.
 - `PlainTextReportFormatter` formats a summary as text that includes `Count: {count}`, `Total: {total}` and `Average: {average}`.

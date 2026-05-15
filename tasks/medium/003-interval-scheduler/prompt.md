@@ -15,8 +15,6 @@ public IReadOnlyList<CalendarEvent> ListEvents()
 ```
 
 Rules:
-- Do not include a namespace.
-- Do not use external libraries.
 - All code, public identifiers, exception messages and comments must be written in English.
 - `AddEvent` returns `true` and stores the event when it does not overlap an existing event.
 - `AddEvent` returns `false` when the interval overlaps any existing event.
