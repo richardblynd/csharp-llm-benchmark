@@ -1,0 +1,26 @@
+id: "hard-014"
+name: "Plugin-Based Pricing Engine"
+difficulty: "hard"
+score:
+  compile: 2
+  tests:
+    executes_known_strategies_in_configured_order: 4
+    registers_custom_strategy_without_changing_engine: 5
+    detects_duplicate_or_conflicting_strategies: 3
+    prevents_negative_prices: 4
+    uses_small_substitutable_contracts: 3
+    returns_explainable_calculation_trace: 3
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

@@ -1,0 +1,27 @@
+id: "hard-012"
+name: "SQLite Inventory Service"
+difficulty: "hard"
+score:
+  compile: 2
+  tests:
+    creates_schema_and_inserts_initial_product: 3
+    adjusts_stock_inside_transactions: 4
+    prevents_negative_stock: 5
+    records_movements_in_order: 3
+    rolls_back_when_composite_operation_fails: 5
+    queries_products_and_movements_by_period: 3
+    disposes_resources_without_invalidating_external_connection: 2
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

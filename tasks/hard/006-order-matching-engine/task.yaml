@@ -1,0 +1,27 @@
+id: "hard-006"
+name: "In-Memory Order Matching Engine"
+difficulty: "hard"
+score:
+  compile: 2
+  tests:
+    adds_limit_orders_to_book: 3
+    matches_buy_and_sell_by_price: 5
+    respects_price_time_priority: 5
+    supports_partial_fills: 4
+    cancels_open_order_without_erasing_history: 3
+    emits_events_in_deterministic_order: 4
+    maintains_invariants_under_controlled_concurrency: 3
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

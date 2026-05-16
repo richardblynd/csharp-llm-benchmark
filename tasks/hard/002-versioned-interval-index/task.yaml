@@ -1,0 +1,27 @@
+id: "hard-002"
+name: "Versioned Interval Index"
+difficulty: "hard"
+score:
+  compile: 2
+  tests:
+    inserts_and_queries_simple_intervals: 3
+    returns_all_range_intersections: 5
+    preserves_snapshot_versions: 5
+    treats_adjacent_intervals_as_non_overlapping: 3
+    rejects_invalid_intervals_without_changing_state: 3
+    returns_results_in_deterministic_order: 3
+    handles_empty_index_and_old_versions: 2
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

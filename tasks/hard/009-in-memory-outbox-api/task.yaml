@@ -1,0 +1,27 @@
+id: "hard-009"
+name: "In-Memory Outbox API And Background Worker"
+difficulty: "hard"
+score:
+  compile: 2
+  tests:
+    endpoint_records_command_and_outbox_atomically: 4
+    worker_publishes_pending_events: 4
+    avoids_publishing_successful_event_twice: 5
+    retries_after_temporary_failure: 4
+    allows_replacing_publisher_in_tests: 3
+    respects_worker_cancellation: 3
+    exposes_command_and_event_status: 3
+language: "csharp"
+dotnet_version: "10"
+project_type: "webapi"
+generated_file: "Controllers/CommandsController.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Program.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

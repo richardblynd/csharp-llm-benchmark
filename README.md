@@ -105,19 +105,18 @@ benchmark:
   evaluation.
 - The system prompt provides shared output and structure rules: generated C#
   must be a single fenced `csharp` block, avoid C# namespaces, may use standard
-  .NET SDK libraries, and must not use third-party/NuGet packages.
+  .NET SDK libraries and package references already present in a task project,
+  and must not add extra third-party/NuGet packages.
 - Medium tasks include data structures, algorithms, async/concurrency, in-memory
   ASP.NET Core APIs, OOP and SOLID exercises.
-- Hard tasks add denser deterministic exercises covering LFU caching with
-  single-flight loading, dependency planning, async ETL, priority scheduling,
-  idempotent and multi-tenant APIs, transactional in-memory persistence, and
-  composable specification rules.
+- Hard tasks add denser deterministic exercises covering interval indexes, LFU
+  caching with single-flight loading, dependency planning, async ETL, priority
+  scheduling, order matching, in-memory APIs, SQLite inventory, transactional
+  persistence, pricing plugins, immutable tries, specification rules and client
+  resilience policies.
 - API tasks use in-memory HTTP integration tests with
-  `Microsoft.AspNetCore.Mvc.Testing`, which is restored into the Docker image so
+  `Microsoft.AspNetCore.Mvc.Testing`, and the SQLite inventory task uses
+  `Microsoft.Data.Sqlite`. Both packages are restored into the Docker image so
   evaluation can continue with container networking disabled.
-- The initial hard suite uses only in-memory state and packages already warmed in
-  the .NET Docker image. SQLite or database-backed hard tasks should warm any new
-  NuGet dependencies in `docker/Dockerfile.dotnet10` before running with network
-  disabled.
 - Docker is run with no network, read-only root filesystem, dropped
   capabilities, process limits, memory limits, and CPU limits.

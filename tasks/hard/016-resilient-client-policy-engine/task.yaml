@@ -1,0 +1,26 @@
+id: "hard-016"
+name: "Resilient Client Policy Engine"
+difficulty: "hard"
+score:
+  compile: 2
+  tests:
+    applies_retry_only_for_configured_failures: 4
+    opens_and_closes_circuit_breaker_with_injected_clock: 5
+    limits_concurrency_with_bulkhead: 4
+    respects_timeout_and_cancellation: 4
+    composes_policies_in_deterministic_order: 3
+    uses_fake_handler_without_network: 2
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

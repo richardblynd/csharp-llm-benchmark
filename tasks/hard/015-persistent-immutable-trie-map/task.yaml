@@ -1,0 +1,27 @@
+id: "hard-015"
+name: "Persistent Immutable Trie Map"
+difficulty: "hard"
+score:
+  compile: 2
+  tests:
+    inserts_and_finds_simple_keys: 3
+    removes_key_without_affecting_others: 4
+    preserves_old_versions_after_changes: 5
+    scans_prefix_in_lexicographic_order: 4
+    handles_empty_null_and_missing_keys: 3
+    stores_generic_values: 2
+    avoids_observable_mutation_between_instances: 3
+language: "csharp"
+dotnet_version: "10"
+project_type: "classlib"
+generated_file: "Solution.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Solution.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

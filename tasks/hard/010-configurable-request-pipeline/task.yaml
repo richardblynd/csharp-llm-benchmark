@@ -1,0 +1,26 @@
+id: "hard-010"
+name: "Configurable Request Pipeline"
+difficulty: "hard"
+score:
+  compile: 2
+  tests:
+    injects_or_preserves_correlation_id: 3
+    validates_options_on_startup: 4
+    maps_domain_exceptions_to_status_codes: 4
+    applies_configurable_policy_per_endpoint: 4
+    keeps_components_separated_and_testable_via_di: 4
+    hides_internal_error_details: 3
+language: "csharp"
+dotnet_version: "10"
+project_type: "webapi"
+generated_file: "PipelineComponents.cs"
+solution_class: "Solution"
+solution_method: "Execute"
+public_files:
+  - "Solution.csproj"
+  - "Program.cs"
+hidden_tests:
+  - "Solution.Tests.csproj"
+  - "UnitTests.cs"
+build_command: "dotnet build tests/Solution.Tests.csproj --configuration Release"
+test_command: 'dotnet test tests/Solution.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults'

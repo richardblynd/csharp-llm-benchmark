@@ -14,7 +14,7 @@ from benchmark.config import LlmConfig
 SYSTEM_PROMPT = """Generate one complete C# source file targeting .NET 10.
 Return exactly one fenced ```csharp code block, with no text outside it.
 Do not declare a C# namespace; top-level using directives are allowed.
-Use only the .NET SDK/BCL; do not use third-party or NuGet packages.
+Use only the .NET SDK/BCL and package references already present in the task project; do not add or require extra third-party or NuGet packages.
 Do not include comments, explanations, greetings, or pleasantries.
 Follow the task contract exactly."""
 
