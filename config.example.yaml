@@ -6,6 +6,8 @@ llm:
   temperature: 0.0
   seed: 42
   timeout_seconds: 120
+  # Optional API request throttle. Use null or omit to disable.
+  # requests_per_minute: 3
 
 benchmark:
   # Optional: choose "easy", "medium", "hard" or "all".

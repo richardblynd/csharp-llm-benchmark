@@ -17,6 +17,7 @@ class LlmConfig:
     temperature: float = 0.0
     seed: int = 42
     timeout_seconds: int = 120
+    requests_per_minute: int | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,10 @@ def load_config(path: Path | None) -> AppConfig:
             timeout_seconds=int(
                 llm_data.get("timeout_seconds", LlmConfig.timeout_seconds)
             ),
+            requests_per_minute=_optional_positive_int(
+                llm_data.get("requests_per_minute"),
+                "llm.requests_per_minute",
+            ),
         ),
         benchmark=BenchmarkConfig(
             difficulty=_optional_string(benchmark_data.get("difficulty")),
@@ -134,6 +139,7 @@ def apply_cli_overrides(
             temperature=config.llm.temperature,
             seed=config.llm.seed,
             timeout_seconds=config.llm.timeout_seconds,
+            requests_per_minute=config.llm.requests_per_minute,
         ),
         benchmark=BenchmarkConfig(
             difficulty=(
@@ -165,4 +171,15 @@ def _positive_int(value: Any, name: str) -> int:
     number = int(value)
     if number < 1:
         raise ValueError(f"{name} must be at least 1")
+    return number
+
+
+def _optional_positive_int(value: Any, name: str) -> int | None:
+    if value is None:
+        return None
+    number = int(value)
+    if number == 0:
+        return None
+    if number < 0:
+        raise ValueError(f"{name} must be at least 1 when set")
     return number

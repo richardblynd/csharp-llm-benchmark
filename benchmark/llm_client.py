@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -46,8 +47,10 @@ class LlmUsage:
 class LlmClient:
     def __init__(self, config: LlmConfig):
         self.config = config
+        self._rate_limiter = RequestRateLimiter(config.requests_per_minute)
 
     def complete(self, user_prompt: str) -> LlmResponse:
+        self._rate_limiter.wait()
         payload: dict[str, Any] = {
             "model": self.config.model,
             "temperature": self.config.temperature,
@@ -88,6 +91,29 @@ class LlmClient:
             response_time_seconds=response_time_seconds,
             usage=_parse_usage(raw_json),
         )
+
+
+class RequestRateLimiter:
+    def __init__(self, requests_per_minute: int | None):
+        self._minimum_interval_seconds = (
+            60.0 / requests_per_minute if requests_per_minute else 0.0
+        )
+        self._next_request_at = 0.0
+        self._lock = threading.Lock()
+
+    def wait(self) -> None:
+        if self._minimum_interval_seconds <= 0:
+            return
+
+        with self._lock:
+            now = time.monotonic()
+            wait_seconds = max(0.0, self._next_request_at - now)
+            self._next_request_at = (
+                max(now, self._next_request_at) + self._minimum_interval_seconds
+            )
+
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
 
 
 def extract_solution_code(

@@ -236,6 +236,10 @@ def _run(args: argparse.Namespace) -> int:
         f"Run directory: {run_dir}",
         f"Evaluation workers: {config.benchmark.evaluation_workers}",
     ]
+    if config.llm.requests_per_minute is not None:
+        header_lines.append(
+            f"LLM rate limit: {config.llm.requests_per_minute} requests/minute"
+        )
     if args.resume is not None:
         _load_resumed_task_scores(
             tasks,
@@ -293,7 +297,22 @@ def _run(args: argparse.Namespace) -> int:
                 and pending_generation in completed_futures
                 and current_generation is not None
             ):
-                generated = pending_generation.result()
+                try:
+                    generated = pending_generation.result()
+                except Exception as exc:
+                    dashboard_rows[current_generation.index].llm = "error"
+                    dashboard_rows[current_generation.index].evaluation = "cancelled"
+                    _cancel_pending_work(
+                        runner,
+                        pending_generation,
+                        pending,
+                        dashboard_rows,
+                    )
+                    dashboard.render()
+                    raise RuntimeError(
+                        f"LLM generation failed for task "
+                        f"{current_generation.task.id}: {exc}"
+                    ) from exc
                 row = dashboard_rows[current_generation.index]
                 row.llm = f"{generated.llm_response_time_seconds:.2f}s"
                 row.tokens = _format_tokens(generated.llm_usage.total_tokens)
@@ -335,7 +354,21 @@ def _run(args: argparse.Namespace) -> int:
                 if completed_future not in pending:
                     continue
                 pending_evaluation = pending.pop(completed_future)
-                result = completed_future.result()
+                try:
+                    result = completed_future.result()
+                except Exception as exc:
+                    dashboard_rows[pending_evaluation.index].evaluation = "error"
+                    _cancel_pending_work(
+                        runner,
+                        pending_generation,
+                        pending,
+                        dashboard_rows,
+                    )
+                    dashboard.render()
+                    raise RuntimeError(
+                        f"Evaluation failed for task "
+                        f"{pending_evaluation.task.id}: {exc}"
+                    ) from exc
                 write_result_json(pending_evaluation.task_dir / "result.json", result)
                 task_score = score_task(pending_evaluation.task, result)
                 task_scores[pending_evaluation.index] = task_score
@@ -384,6 +417,21 @@ def _run(args: argparse.Namespace) -> int:
             f"LLM time: {highest_token_task.llm_response_time_seconds:.2f}s)"
         )
     return 0
+
+
+def _cancel_pending_work(
+    runner: DockerRunner,
+    pending_generation: Future[GeneratedSolution] | None,
+    pending_evaluations: dict[Future[TaskRunResult], PendingEvaluation],
+    rows: list[DashboardRow],
+) -> None:
+    if pending_generation is not None:
+        pending_generation.cancel()
+    for future, pending_evaluation in pending_evaluations.items():
+        if not future.done():
+            rows[pending_evaluation.index].evaluation = "cancelled"
+        future.cancel()
+    runner.cancel()
 
 
 def _queue_generation(

@@ -61,6 +61,7 @@ def write_summary(
             "temperature": config.llm.temperature,
             "seed": config.llm.seed,
             "timeout_seconds": config.llm.timeout_seconds,
+            "requests_per_minute": config.llm.requests_per_minute,
         },
         "score": {
             "earned_points": score.earned_points,

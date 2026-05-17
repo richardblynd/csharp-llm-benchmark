@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import threading
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -46,6 +47,16 @@ class TaskRunResult:
 class DockerRunner:
     def __init__(self, config: DockerConfig):
         self.config = config
+        self._active_containers: set[str] = set()
+        self._lock = threading.Lock()
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        with self._lock:
+            self._cancelled = True
+            container_names = tuple(self._active_containers)
+        for container_name in container_names:
+            self._remove_container(container_name)
 
     def evaluate(
         self,
@@ -81,11 +92,14 @@ class DockerRunner:
 
             container_name = f"csharp-llm-benchmark-{workdir.name}"
             container_workdir = f"/workspace/{workdir.name}"
+            self._register_container(container_name)
             create = self._create_container(container_name)
             if create.exit_code != 0:
                 (artifact_dir / "build.log").write_text(
                     create.combined_output + "\n", encoding="utf-8"
                 )
+                self._remove_container(container_name)
+                self._unregister_container(container_name)
                 return self._infrastructure_result(
                     task,
                     workdir,
@@ -96,6 +110,16 @@ class DockerRunner:
                 )
 
             try:
+                if self._is_cancelled():
+                    return self._infrastructure_result(
+                        task,
+                        workdir,
+                        create,
+                        "Evaluation was cancelled.",
+                        llm_response_time_seconds=llm_response_time_seconds,
+                        llm_usage=llm_usage,
+                    )
+
                 setup = self._copy_workspace_to_container(
                     container_name,
                     workdir,
@@ -217,6 +241,19 @@ class DockerRunner:
                 )
             finally:
                 self._remove_container(container_name)
+                self._unregister_container(container_name)
+
+    def _register_container(self, container_name: str) -> None:
+        with self._lock:
+            self._active_containers.add(container_name)
+
+    def _unregister_container(self, container_name: str) -> None:
+        with self._lock:
+            self._active_containers.discard(container_name)
+
+    def _is_cancelled(self) -> bool:
+        with self._lock:
+            return self._cancelled
 
     def _prepare_workspace(self, task: Task, code: str, workdir: Path) -> None:
         for public_file in task.public_files:
