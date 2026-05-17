@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sys
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -147,6 +148,22 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--model")
     run.add_argument("--task-id", help="Run only one task by id, e.g. easy-001")
     run.add_argument(
+        "--resume",
+        metavar="TASK_ID",
+        help=(
+            "Continue an existing run from this task id, reusing prior "
+            "result.json files from the selected results folder."
+        ),
+    )
+    run.add_argument(
+        "--resume-dir",
+        type=Path,
+        help=(
+            "Existing results folder to continue. If omitted with --resume, "
+            "the runner prompts for a folder under the configured output dir."
+        ),
+    )
+    run.add_argument(
         "--evaluation-workers",
         type=int,
         help=(
@@ -186,25 +203,58 @@ def _run(args: argparse.Namespace) -> int:
         task_id=args.task_id,
         evaluation_workers=args.evaluation_workers,
     )
+    if args.resume is None and args.resume_dir is not None:
+        raise ValueError("--resume-dir requires --resume")
+    if args.resume is not None and config.benchmark.task_id is not None:
+        raise ValueError("--resume cannot be combined with --task-id")
+
     tasks = load_tasks(config.benchmark.difficulty)
     tasks = _filter_tasks(tasks, config.benchmark.task_id)
     errors = validate_tasks(tasks)
     if errors:
         raise RuntimeError("Task validation failed:\n" + "\n".join(errors))
 
-    run_dir = create_run_dir(config.benchmark.output_dir)
+    resume_from_index = 0
+    if args.resume is not None:
+        resume_from_index = _find_task_index(tasks, args.resume)
+        run_dir = _resolve_resume_run_dir(
+            config.benchmark.output_dir,
+            args.resume_dir,
+        )
+    else:
+        run_dir = create_run_dir(
+            config.benchmark.output_dir,
+            model=config.llm.model,
+            quantization=config.llm.quantization,
+        )
+
     client = LlmClient(config.llm)
     runner = DockerRunner(config.docker)
     task_scores: list[TaskScore | None] = [None] * len(tasks)
     dashboard_rows = [DashboardRow(task) for task in tasks]
+    header_lines = [
+        f"Run directory: {run_dir}",
+        f"Evaluation workers: {config.benchmark.evaluation_workers}",
+    ]
+    if args.resume is not None:
+        _load_resumed_task_scores(
+            tasks,
+            task_scores,
+            dashboard_rows,
+            run_dir,
+            resume_from_index=resume_from_index,
+        )
+        header_lines.extend(
+            [
+                f"Resume from: {args.resume}",
+                f"Reused completed tasks: {resume_from_index}",
+            ]
+        )
     dashboard = DashboardRenderer(
         dashboard_rows,
-        header_lines=[
-            f"Run directory: {run_dir}",
-            f"Evaluation workers: {config.benchmark.evaluation_workers}",
-        ],
+        header_lines=header_lines,
     )
-    next_task_index = 0
+    next_task_index = resume_from_index
     pending_generation: Future[GeneratedSolution] | None = None
     current_generation: PendingGeneration | None = None
     pending: dict[Future[TaskRunResult], PendingEvaluation] = {}
@@ -216,16 +266,16 @@ def _run(args: argparse.Namespace) -> int:
         max_workers=config.benchmark.evaluation_workers,
         thread_name_prefix="benchmark-eval",
     ) as evaluation_executor:
-        if tasks:
+        if next_task_index < len(tasks):
             pending_generation, current_generation = _queue_generation(
                 generation_executor,
                 client,
-                tasks[0],
+                tasks[next_task_index],
                 run_dir,
-                index=0,
+                index=next_task_index,
             )
-            dashboard_rows[0].llm = LLM_RUNNING_STATUS
-            next_task_index = 1
+            dashboard_rows[next_task_index].llm = LLM_RUNNING_STATUS
+            next_task_index += 1
         dashboard.render()
 
         while pending_generation is not None or pending:
@@ -384,6 +434,140 @@ def _completed_task_scores(task_scores: list[TaskScore | None]) -> list[TaskScor
     return completed
 
 
+def _load_resumed_task_scores(
+    tasks: list[Task],
+    task_scores: list[TaskScore | None],
+    dashboard_rows: list[DashboardRow],
+    run_dir: Path,
+    *,
+    resume_from_index: int,
+) -> None:
+    missing: list[str] = []
+    for index, task in enumerate(tasks[:resume_from_index]):
+        result_path = run_dir / "tasks" / task.id / "result.json"
+        if not result_path.exists():
+            missing.append(task.id)
+            continue
+
+        result = _read_task_result_json(result_path)
+        if result.task_id != task.id:
+            raise ValueError(
+                f"{result_path} belongs to {result.task_id}, expected {task.id}"
+            )
+
+        task_score = score_task(task, result)
+        task_scores[index] = task_score
+        dashboard_rows[index].llm = f"{task_score.llm_response_time_seconds:.2f}s"
+        dashboard_rows[index].tokens = _format_tokens(
+            task_score.llm_usage.total_tokens
+        )
+        dashboard_rows[index].evaluation = (
+            "resumed "
+            + _format_evaluation_status(
+                task,
+                result,
+                task_score,
+            )
+        )
+
+    if missing:
+        joined = ", ".join(missing)
+        raise RuntimeError(
+            "Cannot resume because prior result.json files are missing for: "
+            f"{joined}"
+        )
+
+
+def _read_task_result_json(path: Path) -> TaskRunResult:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if "status" not in data:
+        raise ValueError(f"{path} is missing status")
+
+    llm_usage_data = data.get("llm_usage") or {}
+    if not isinstance(llm_usage_data, dict):
+        llm_usage_data = {}
+
+    return TaskRunResult(
+        task_id=str(data.get("task_id") or path.parent.name),
+        status=str(data["status"]),
+        llm_response_time_seconds=float(data.get("llm_response_time_seconds") or 0),
+        llm_usage=LlmUsage(
+            prompt_tokens=_optional_int(llm_usage_data.get("prompt_tokens")),
+            completion_tokens=_optional_int(
+                llm_usage_data.get("completion_tokens")
+            ),
+            total_tokens=_optional_int(llm_usage_data.get("total_tokens")),
+            reasoning_tokens=_optional_int(llm_usage_data.get("reasoning_tokens")),
+        ),
+        workdir=_optional_text(data.get("workdir")),
+        build=None,
+        test=None,
+        passed_tests=_string_tuple(data.get("passed_tests")),
+        failed_tests=_string_tuple(data.get("failed_tests")),
+        extraction_warnings=_string_tuple(data.get("extraction_warnings")),
+        extraction_error=_optional_text(data.get("extraction_error")),
+        infrastructure_error=_optional_text(data.get("infrastructure_error")),
+    )
+
+
+def _resolve_resume_run_dir(output_dir: Path, resume_dir: Path | None) -> Path:
+    if resume_dir is None:
+        run_dir = _prompt_for_resume_run_dir(output_dir)
+    else:
+        run_dir = _normalize_resume_run_dir(output_dir, resume_dir)
+
+    if not run_dir.is_dir():
+        raise FileNotFoundError(f"Results folder not found: {run_dir}")
+    if not (run_dir / "tasks").is_dir():
+        raise FileNotFoundError(f"Results folder has no tasks directory: {run_dir}")
+    return run_dir
+
+
+def _prompt_for_resume_run_dir(output_dir: Path) -> Path:
+    if not output_dir.is_dir():
+        raise FileNotFoundError(f"Output directory not found: {output_dir}")
+
+    candidates = sorted(
+        (
+            path
+            for path in output_dir.iterdir()
+            if path.is_dir() and (path / "tasks").is_dir()
+        ),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        raise FileNotFoundError(f"No results folders found under {output_dir}")
+
+    if not sys.stdin.isatty():
+        available = ", ".join(path.name for path in candidates[:10])
+        raise RuntimeError(
+            "--resume requires --resume-dir when stdin is not interactive. "
+            f"Available folders: {available}"
+        )
+
+    print("Available results folders:")
+    for index, path in enumerate(candidates, start=1):
+        print(f"  {index}. {path.name}")
+    choice = input("Choose results folder to resume [1]: ").strip()
+    if not choice:
+        return candidates[0]
+    if choice.isdecimal():
+        selected_index = int(choice) - 1
+        if 0 <= selected_index < len(candidates):
+            return candidates[selected_index]
+        raise ValueError(f"Invalid results folder selection: {choice}")
+    return _normalize_resume_run_dir(output_dir, Path(choice))
+
+
+def _normalize_resume_run_dir(output_dir: Path, resume_dir: Path) -> Path:
+    if resume_dir.is_absolute():
+        return resume_dir
+    if resume_dir.exists():
+        return resume_dir
+    return output_dir / resume_dir
+
+
 def _refresh_evaluation_statuses(
     pending_evaluations: dict[Future[TaskRunResult], PendingEvaluation],
     rows: list[DashboardRow],
@@ -425,6 +609,14 @@ def _format_evaluation_status(
     return label
 
 
+def _find_task_index(tasks: list[Task], task_id: str) -> int:
+    for index, task in enumerate(tasks):
+        if task.id == task_id:
+            return index
+    available = ", ".join(task.id for task in tasks)
+    raise ValueError(f"Task id not found: {task_id}. Available ids: {available}")
+
+
 def _filter_tasks(tasks, task_id: str | None):
     if task_id is None:
         return tasks
@@ -446,6 +638,27 @@ def _sum_known_tokens(values) -> int | None:
     if not known_values:
         return None
     return sum(known_values)
+
+
+def _optional_int(value) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_text(value) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _string_tuple(value) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(str(item) for item in value)
 
 
 def _format_tokens(tokens: int | None) -> str:

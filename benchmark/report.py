@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,9 +11,15 @@ from benchmark.config import AppConfig
 from benchmark.scorer import BenchmarkScore, TaskScore
 
 
-def create_run_dir(output_dir: Path) -> Path:
+def create_run_dir(output_dir: Path, *, model: str, quantization: str) -> Path:
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    run_dir = output_dir / timestamp
+    run_dir = output_dir / "_".join(
+        [
+            timestamp,
+            _format_run_dir_label(model),
+            _format_run_dir_label(quantization),
+        ]
+    )
     run_dir.mkdir(parents=True, exist_ok=False)
     (run_dir / "tasks").mkdir()
     return run_dir
@@ -46,9 +53,11 @@ def write_summary(
     payload: dict[str, Any] = {
         "generated_at": generated_at,
         "model": config.llm.model,
+        "quantization": config.llm.quantization,
         "llm": {
             "base_url": config.llm.base_url,
             "model": config.llm.model,
+            "quantization": config.llm.quantization,
             "temperature": config.llm.temperature,
             "seed": config.llm.seed,
             "timeout_seconds": config.llm.timeout_seconds,
@@ -97,6 +106,7 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         "",
         f"- Generated at: `{payload['generated_at']}`",
         f"- Model: `{payload['model']}`",
+        f"- Quantization: `{payload['quantization']}`",
         f"- Final score: `{payload['score']['final_score']}`",
         f"- Points: `{payload['score']['earned_points']} / {payload['score']['available_points']}`",
         f"- Total LLM response time: `{format_duration_hms(payload['llm_response_time']['total_seconds'])}`",
@@ -160,6 +170,12 @@ def format_duration_hms(seconds: float) -> str:
     hours, remainder = divmod(total_seconds, 60 * 60)
     minutes, seconds = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def _format_run_dir_label(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip())
+    cleaned = cleaned.strip(".-_")
+    return cleaned[:80] or "unknown"
 
 
 def _sum_known_tokens(values) -> int | None:

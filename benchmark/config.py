@@ -13,6 +13,7 @@ class LlmConfig:
     base_url: str = "http://localhost:1234/v1"
     api_key: str = "lm-studio"
     model: str = "local-model-name"
+    quantization: str = "unknown"
     temperature: float = 0.0
     seed: int = 42
     timeout_seconds: int = 120
@@ -66,6 +67,10 @@ def load_config(path: Path | None) -> AppConfig:
             base_url=str(llm_data.get("base_url", LlmConfig.base_url)).rstrip("/"),
             api_key=api_key,
             model=str(llm_data.get("model", LlmConfig.model)),
+            quantization=(
+                _optional_string(llm_data.get("quantization"))
+                or LlmConfig.quantization
+            ),
             temperature=float(llm_data.get("temperature", LlmConfig.temperature)),
             seed=int(llm_data.get("seed", LlmConfig.seed)),
             timeout_seconds=int(
@@ -125,6 +130,7 @@ def apply_cli_overrides(
             base_url=(base_url or config.llm.base_url).rstrip("/"),
             api_key=api_key or config.llm.api_key,
             model=model or config.llm.model,
+            quantization=config.llm.quantization,
             temperature=config.llm.temperature,
             seed=config.llm.seed,
             timeout_seconds=config.llm.timeout_seconds,
