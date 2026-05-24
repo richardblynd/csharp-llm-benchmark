@@ -146,6 +146,8 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--base-url")
     run.add_argument("--api-key")
     run.add_argument("--model")
+    run.add_argument("--model-label")
+    run.add_argument("--company")
     run.add_argument("--task-id", help="Run only one task by id, e.g. easy-001")
     run.add_argument(
         "--resume",
@@ -198,6 +200,8 @@ def _run(args: argparse.Namespace) -> int:
         base_url=args.base_url,
         api_key=args.api_key,
         model=args.model,
+        model_label=args.model_label,
+        company=args.company,
         difficulty=args.difficulty,
         output_dir=args.output_dir,
         task_id=args.task_id,
@@ -224,7 +228,7 @@ def _run(args: argparse.Namespace) -> int:
     else:
         run_dir = create_run_dir(
             config.benchmark.output_dir,
-            model=config.llm.model,
+            model_label=config.llm.effective_model_label,
             quantization=config.llm.quantization,
         )
 
@@ -369,7 +373,13 @@ def _run(args: argparse.Namespace) -> int:
                         f"Evaluation failed for task "
                         f"{pending_evaluation.task.id}: {exc}"
                     ) from exc
-                write_result_json(pending_evaluation.task_dir / "result.json", result)
+                write_result_json(
+                    pending_evaluation.task_dir / "result.json",
+                    result,
+                    model=config.llm.model,
+                    model_label=config.llm.effective_model_label,
+                    company=config.llm.company,
+                )
                 task_score = score_task(pending_evaluation.task, result)
                 task_scores[pending_evaluation.index] = task_score
                 dashboard_rows[pending_evaluation.index].evaluation = (

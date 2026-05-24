@@ -11,12 +11,12 @@ from benchmark.config import AppConfig
 from benchmark.scorer import BenchmarkScore, TaskScore
 
 
-def create_run_dir(output_dir: Path, *, model: str, quantization: str) -> Path:
+def create_run_dir(output_dir: Path, *, model_label: str, quantization: str) -> Path:
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     run_dir = output_dir / "_".join(
         [
             timestamp,
-            _format_run_dir_label(model),
+            _format_run_dir_label(model_label),
             _format_run_dir_label(quantization),
         ]
     )
@@ -50,13 +50,18 @@ def write_summary(
         task_score.llm_usage.reasoning_tokens for task_score in task_scores
     )
     highest_token_task = find_highest_token_task(task_scores)
+    model_label = config.llm.effective_model_label
     payload: dict[str, Any] = {
         "generated_at": generated_at,
         "model": config.llm.model,
+        "modelLabel": model_label,
+        "company": config.llm.company,
         "quantization": config.llm.quantization,
         "llm": {
             "base_url": config.llm.base_url,
             "model": config.llm.model,
+            "modelLabel": model_label,
+            "company": config.llm.company,
             "quantization": config.llm.quantization,
             "temperature": config.llm.temperature,
             "seed": config.llm.seed,
@@ -106,7 +111,9 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         "# C# LLM Benchmark Summary",
         "",
         f"- Generated at: `{payload['generated_at']}`",
+        f"- Model label: `{payload['modelLabel']}`",
         f"- Model: `{payload['model']}`",
+        f"- Company: `{payload['company'] or 'n/a'}`",
         f"- Quantization: `{payload['quantization']}`",
         f"- Final score: `{payload['score']['final_score']}`",
         f"- Points: `{payload['score']['earned_points']} / {payload['score']['available_points']}`",

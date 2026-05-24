@@ -13,11 +13,17 @@ class LlmConfig:
     base_url: str = "http://localhost:1234/v1"
     api_key: str = "lm-studio"
     model: str = "local-model-name"
+    model_label: str | None = None
+    company: str | None = None
     quantization: str = "unknown"
     temperature: float = 0.0
     seed: int = 42
     timeout_seconds: int = 120
     requests_per_minute: int | None = None
+
+    @property
+    def effective_model_label(self) -> str:
+        return self.model_label or self.model
 
 
 @dataclass(frozen=True)
@@ -63,11 +69,19 @@ def load_config(path: Path | None) -> AppConfig:
         or str(llm_data.get("api_key", LlmConfig.api_key))
     )
 
+    model = str(llm_data.get("model", LlmConfig.model))
+    model_label = _optional_string(
+        llm_data.get("modelLabel", llm_data.get("model_label"))
+    )
+    company = _optional_string(llm_data.get("company"))
+
     return AppConfig(
         llm=LlmConfig(
             base_url=str(llm_data.get("base_url", LlmConfig.base_url)).rstrip("/"),
             api_key=api_key,
-            model=str(llm_data.get("model", LlmConfig.model)),
+            model=model,
+            model_label=model_label,
+            company=company,
             quantization=(
                 _optional_string(llm_data.get("quantization"))
                 or LlmConfig.quantization
@@ -125,6 +139,8 @@ def apply_cli_overrides(
     base_url: str | None = None,
     api_key: str | None = None,
     model: str | None = None,
+    model_label: str | None = None,
+    company: str | None = None,
     difficulty: str | None = None,
     output_dir: str | None = None,
     task_id: str | None = None,
@@ -135,6 +151,16 @@ def apply_cli_overrides(
             base_url=(base_url or config.llm.base_url).rstrip("/"),
             api_key=api_key or config.llm.api_key,
             model=model or config.llm.model,
+            model_label=(
+                _optional_string(model_label)
+                if model_label is not None
+                else config.llm.model_label
+            ),
+            company=(
+                _optional_string(company)
+                if company is not None
+                else config.llm.company
+            ),
             quantization=config.llm.quantization,
             temperature=config.llm.temperature,
             seed=config.llm.seed,

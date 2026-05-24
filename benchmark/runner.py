@@ -542,23 +542,38 @@ def parse_trx_results(results_dir: Path) -> tuple[set[str], set[str]]:
     return passed, failed
 
 
-def write_result_json(path: Path, result: TaskRunResult) -> None:
+def write_result_json(
+    path: Path,
+    result: TaskRunResult,
+    *,
+    model: str | None = None,
+    model_label: str | None = None,
+    company: str | None = None,
+) -> None:
+    payload = {
+        "task_id": result.task_id,
+        "status": result.status,
+        "llm_response_time_seconds": result.llm_response_time_seconds,
+        "llm_usage": asdict(result.llm_usage),
+        "workdir": result.workdir,
+        "passed_tests": list(result.passed_tests),
+        "failed_tests": list(result.failed_tests),
+        "extraction_warnings": list(result.extraction_warnings),
+        "extraction_error": result.extraction_error,
+        "infrastructure_error": result.infrastructure_error,
+        "build_exit_code": result.build.exit_code if result.build else None,
+        "test_exit_code": result.test.exit_code if result.test else None,
+    }
+    if model is not None:
+        payload["model"] = model
+    if model_label is not None:
+        payload["modelLabel"] = model_label
+    if company is not None:
+        payload["company"] = company
+
     path.write_text(
         json.dumps(
-            {
-                "task_id": result.task_id,
-                "status": result.status,
-                "llm_response_time_seconds": result.llm_response_time_seconds,
-                "llm_usage": asdict(result.llm_usage),
-                "workdir": result.workdir,
-                "passed_tests": list(result.passed_tests),
-                "failed_tests": list(result.failed_tests),
-                "extraction_warnings": list(result.extraction_warnings),
-                "extraction_error": result.extraction_error,
-                "infrastructure_error": result.infrastructure_error,
-                "build_exit_code": result.build.exit_code if result.build else None,
-                "test_exit_code": result.test.exit_code if result.test else None,
-            },
+            payload,
             indent=2,
             sort_keys=True,
         )

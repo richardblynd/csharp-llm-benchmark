@@ -2,6 +2,8 @@ llm:
   base_url: "http://localhost:1234/v1"
   api_key: "lm-studio"
   model: "local-model-name"
+  modelLabel: "local-model-label"
+  company: "local-company"
   quantization: "not-specified"
   temperature: 0.0
   seed: 42

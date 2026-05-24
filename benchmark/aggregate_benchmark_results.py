@@ -16,6 +16,7 @@ DIFFICULTIES = ("easy", "medium", "hard")
 class BenchmarkResult:
     run_name: str
     model: str
+    company: str
     quantization: str
     total_seconds: float | None
     total_tokens: int | None
@@ -102,10 +103,23 @@ def parse_summary(
     payload: dict[str, Any],
     tasks: list[dict[str, Any]],
 ) -> BenchmarkResult:
-    model = str(payload.get("model") or payload.get("llm", {}).get("model") or run_name)
+    llm_payload = payload.get("llm", {})
+    if not isinstance(llm_payload, dict):
+        llm_payload = {}
+
+    model = str(
+        payload.get("modelLabel")
+        or llm_payload.get("modelLabel")
+        or payload.get("model_label")
+        or llm_payload.get("model_label")
+        or payload.get("model")
+        or llm_payload.get("model")
+        or run_name
+    )
+    company = str(payload.get("company") or llm_payload.get("company") or "")
     quantization = str(
         payload.get("quantization")
-        or payload.get("llm", {}).get("quantization")
+        or llm_payload.get("quantization")
         or infer_quantization(run_name)
         or ""
     )
@@ -157,6 +171,7 @@ def parse_summary(
     return BenchmarkResult(
         run_name=run_name,
         model=model,
+        company=company,
         quantization=quantization,
         total_seconds=total_seconds,
         total_tokens=total_tokens,
@@ -201,15 +216,16 @@ def render_markdown(
         f"- Results directory: `{results_dir}`",
         f"- Benchmark runs: `{len(benchmark_results)}`",
         "",
-        "| Rank | Model | Quantization | Total time | Total tokens | Tokens/s | Easy score | Medium score | Hard score | Final score |",
-        "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Rank | Model | Company | Quantization | Total time | Total tokens | Tokens/s | Easy score | Medium score | Hard score | Final score |",
+        "| ---: | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
 
     for rank, result in enumerate(benchmark_results, start=1):
         lines.append(
-            "| {rank} | {model} | {quantization} | {total_time} | {total_tokens} | {tokens_per_second} | {easy_score} | {medium_score} | {hard_score} | {final_score} |".format(
+            "| {rank} | {model} | {company} | {quantization} | {total_time} | {total_tokens} | {tokens_per_second} | {easy_score} | {medium_score} | {hard_score} | {final_score} |".format(
                 rank=rank,
                 model=markdown_code(result.model),
+                company=markdown_code(result.company or "n/a"),
                 quantization=markdown_code(result.quantization or "n/a"),
                 total_time=markdown_code(format_duration(result.total_seconds)),
                 total_tokens=format_int(result.total_tokens),
