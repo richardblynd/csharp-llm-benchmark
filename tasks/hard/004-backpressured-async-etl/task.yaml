@@ -12,7 +12,7 @@ score:
     exposes_separate_contracts_for_pipeline_parts: 4
     handles_empty_input: 2
 language: "csharp"
-dotnet_version: "10"
+dotnet_version: "8"
 project_type: "classlib"
 generated_file: "Solution.cs"
 solution_class: "Solution"

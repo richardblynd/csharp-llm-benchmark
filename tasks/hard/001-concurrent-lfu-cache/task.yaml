@@ -11,7 +11,7 @@ score:
     loader_failure_does_not_poison_cache: 4
     validates_capacity_and_ttl: 3
 language: "csharp"
-dotnet_version: "10"
+dotnet_version: "8"
 project_type: "classlib"
 generated_file: "Solution.cs"
 solution_class: "Solution"

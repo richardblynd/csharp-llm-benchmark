@@ -9,7 +9,7 @@ score:
     can_be_tested_with_in_memory_fakes: 3
     handles_invalid_records_without_stopping_all_processing: 3
 language: "csharp"
-dotnet_version: "10"
+dotnet_version: "8"
 project_type: "classlib"
 generated_file: "Solution.cs"
 solution_class: "Solution"

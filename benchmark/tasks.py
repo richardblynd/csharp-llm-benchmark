@@ -136,7 +136,7 @@ def _load_task(task_dir: Path, data: dict[str, Any]) -> Task:
             tests={str(key): float(value) for key, value in tests_data.items()},
         ),
         language=str(data.get("language", "csharp")),
-        dotnet_version=str(data.get("dotnet_version", "10")),
+        dotnet_version=str(data.get("dotnet_version", "8")),
         project_type=str(data.get("project_type", "classlib")),
         generated_file=str(data.get("generated_file", "Solution.cs")),
         solution_class=str(data.get("solution_class", "Solution")),

@@ -12,6 +12,9 @@ llm:
   # requests_per_minute: 3
 
 benchmark:
+  # Solution generator: "llm" calls the OpenAI-compatible API directly;
+  # "opencode" runs the same model through OpenCode inside Docker.
+  generator: "llm"
   # Optional: choose "easy", "medium", "hard" or "all".
   # Omit or use "all" to run every difficulty.
   difficulty: "all"
@@ -23,8 +26,30 @@ benchmark:
   # Optional: run only one task from the selected difficulty scope.
   # task_id: "easy-001"
 
+opencode:
+  # Required when benchmark.generator is "opencode".
+  # version: "1.1.64"
+  package: "opencode-ai"
+  docker_image: "csharp-llm-benchmark-opencode"
+  cache_dir: ".cache/opencode"
+  timeout_seconds: 900
+  keep_timed_out_containers: false
+  max_steps: 40
+  network: "bridge"
+  # Optional model limits passed to OpenCode so it can track remaining context
+  # for OpenAI-compatible/custom providers. Omit when OpenCode can infer them.
+  # context_limit: 131072
+  # output_limit: 8192
+  compaction:
+    auto: true
+    prune: true
+    reserved: 10000
+  # Optional endpoint visible from inside the OpenCode container. When omitted,
+  # localhost/127.0.0.1 in llm.base_url is translated to host.docker.internal.
+  # container_base_url: "http://host.docker.internal:1234/v1"
+
 docker:
-  image: "csharp-llm-benchmark-dotnet10"
+  image: "csharp-llm-benchmark-dotnet8"
   timeout_seconds: 60
   memory_limit: "512m"
   cpus: "1.0"

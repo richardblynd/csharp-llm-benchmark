@@ -10,6 +10,7 @@ import threading
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 from benchmark.config import DockerConfig
 from benchmark.llm_client import ExtractedCode, LlmUsage
@@ -22,6 +23,7 @@ class CommandResult:
     stdout: str
     stderr: str
     timed_out: bool = False
+    container_name: str | None = None
 
     @property
     def combined_output(self) -> str:
@@ -42,6 +44,8 @@ class TaskRunResult:
     extraction_warnings: tuple[str, ...]
     extraction_error: str | None = None
     infrastructure_error: str | None = None
+    generator: str = "llm"
+    opencode_metadata: dict[str, Any] | None = None
 
 
 class DockerRunner:
@@ -66,7 +70,13 @@ class DockerRunner:
         artifact_dir: Path,
         llm_response_time_seconds: float,
         llm_usage: LlmUsage,
+        generator: str = "llm",
+        opencode_metadata: dict[str, Any] | None = None,
     ) -> TaskRunResult:
+        metadata = {
+            "generator": generator,
+            "opencode_metadata": opencode_metadata,
+        }
         if extracted_code.code is None:
             return TaskRunResult(
                 task_id=task.id,
@@ -80,6 +90,7 @@ class DockerRunner:
                 failed_tests=(),
                 extraction_warnings=extracted_code.warnings,
                 extraction_error=extracted_code.error,
+                **metadata,
             )
 
         with tempfile.TemporaryDirectory(
@@ -104,10 +115,12 @@ class DockerRunner:
                     task,
                     workdir,
                     create,
-                    "Docker could not create the evaluation container.",
-                    llm_response_time_seconds=llm_response_time_seconds,
-                    llm_usage=llm_usage,
-                )
+                        "Docker could not create the evaluation container.",
+                        llm_response_time_seconds=llm_response_time_seconds,
+                        llm_usage=llm_usage,
+                        generator=generator,
+                        opencode_metadata=opencode_metadata,
+                    )
 
             try:
                 if self._is_cancelled():
@@ -118,6 +131,8 @@ class DockerRunner:
                         "Evaluation was cancelled.",
                         llm_response_time_seconds=llm_response_time_seconds,
                         llm_usage=llm_usage,
+                        generator=generator,
+                        opencode_metadata=opencode_metadata,
                     )
 
                 setup = self._copy_workspace_to_container(
@@ -136,6 +151,8 @@ class DockerRunner:
                         "Docker could not copy the workspace into the container.",
                         llm_response_time_seconds=llm_response_time_seconds,
                         llm_usage=llm_usage,
+                        generator=generator,
+                        opencode_metadata=opencode_metadata,
                     )
 
                 build = self._exec_in_container(
@@ -155,6 +172,8 @@ class DockerRunner:
                         "Docker or the evaluation image failed before build could run.",
                         llm_response_time_seconds=llm_response_time_seconds,
                         llm_usage=llm_usage,
+                        generator=generator,
+                        opencode_metadata=opencode_metadata,
                     )
                 if build.timed_out:
                     return self._infrastructure_result(
@@ -164,6 +183,8 @@ class DockerRunner:
                         "Build command timed out.",
                         llm_response_time_seconds=llm_response_time_seconds,
                         llm_usage=llm_usage,
+                        generator=generator,
+                        opencode_metadata=opencode_metadata,
                     )
                 if build.exit_code != 0:
                     return TaskRunResult(
@@ -177,6 +198,7 @@ class DockerRunner:
                         passed_tests=(),
                         failed_tests=(),
                         extraction_warnings=extracted_code.warnings,
+                        **metadata,
                     )
 
                 test = self._exec_in_container(
@@ -197,6 +219,8 @@ class DockerRunner:
                         test,
                         llm_response_time_seconds=llm_response_time_seconds,
                         llm_usage=llm_usage,
+                        generator=generator,
+                        opencode_metadata=opencode_metadata,
                     )
                 if test.timed_out:
                     return self._infrastructure_result(
@@ -207,6 +231,8 @@ class DockerRunner:
                         test,
                         llm_response_time_seconds=llm_response_time_seconds,
                         llm_usage=llm_usage,
+                        generator=generator,
+                        opencode_metadata=opencode_metadata,
                     )
 
                 copy_results = self._copy_results_from_container(
@@ -223,6 +249,8 @@ class DockerRunner:
                         test,
                         llm_response_time_seconds=llm_response_time_seconds,
                         llm_usage=llm_usage,
+                        generator=generator,
+                        opencode_metadata=opencode_metadata,
                     )
 
                 passed, failed = parse_trx_results(workdir / "TestResults")
@@ -238,6 +266,7 @@ class DockerRunner:
                     passed_tests=tuple(sorted(passed)),
                     failed_tests=tuple(sorted(failed)),
                     extraction_warnings=extracted_code.warnings,
+                    **metadata,
                 )
             finally:
                 self._remove_container(container_name)
@@ -500,6 +529,8 @@ class DockerRunner:
         *,
         llm_response_time_seconds: float,
         llm_usage: LlmUsage,
+        generator: str = "llm",
+        opencode_metadata: dict[str, Any] | None = None,
     ) -> TaskRunResult:
         return TaskRunResult(
             task_id=task.id,
@@ -513,6 +544,8 @@ class DockerRunner:
             failed_tests=(),
             extraction_warnings=(),
             infrastructure_error=message,
+            generator=generator,
+            opencode_metadata=opencode_metadata,
         )
 
 
@@ -561,6 +594,8 @@ def write_result_json(
         "extraction_warnings": list(result.extraction_warnings),
         "extraction_error": result.extraction_error,
         "infrastructure_error": result.infrastructure_error,
+        "generator": result.generator,
+        "opencode": result.opencode_metadata,
         "build_exit_code": result.build.exit_code if result.build else None,
         "test_exit_code": result.test.exit_code if result.test else None,
     }

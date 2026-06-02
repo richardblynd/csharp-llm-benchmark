@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:10.0
+FROM mcr.microsoft.com/dotnet/sdk:8.0
 
 ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
     DOTNET_NOLOGO=1 \
@@ -11,12 +11,12 @@ RUN mkdir -p /nuget/packages /tmp/mstest-warmup && \
 
 WORKDIR /tmp/mstest-warmup
 
-RUN dotnet new classlib --framework net10.0 --name Solution && \
+RUN dotnet new classlib --framework net8.0 --name Solution && \
     mkdir -p Solution.Tests && \
     printf '%s\n' \
       '<Project Sdk="Microsoft.NET.Sdk">' \
       '  <PropertyGroup>' \
-      '    <TargetFramework>net10.0</TargetFramework>' \
+      '    <TargetFramework>net8.0</TargetFramework>' \
       '    <ImplicitUsings>enable</ImplicitUsings>' \
       '    <Nullable>enable</Nullable>' \
       '    <IsPackable>false</IsPackable>' \
@@ -28,8 +28,8 @@ RUN dotnet new classlib --framework net10.0 --name Solution && \
       '    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />' \
       '    <PackageReference Include="MSTest.TestAdapter" Version="3.9.3" />' \
       '    <PackageReference Include="MSTest.TestFramework" Version="3.9.3" />' \
-      '    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.0" />' \
-      '    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />' \
+      '    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="8.0.0" />' \
+      '    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.0" />' \
       '  </ItemGroup>' \
       '</Project>' \
       > Solution.Tests/Solution.Tests.csproj && \

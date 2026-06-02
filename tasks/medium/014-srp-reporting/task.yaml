@@ -9,7 +9,7 @@ score:
     isolates_output_destination_with_contract: 3
     allows_each_responsibility_to_be_tested_separately: 3
 language: "csharp"
-dotnet_version: "10"
+dotnet_version: "8"
 project_type: "classlib"
 generated_file: "Solution.cs"
 solution_class: "Solution"

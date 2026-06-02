@@ -11,7 +11,7 @@ score:
     keeps_components_separated_and_testable_via_di: 4
     hides_internal_error_details: 3
 language: "csharp"
-dotnet_version: "10"
+dotnet_version: "8"
 project_type: "webapi"
 generated_file: "PipelineComponents.cs"
 solution_class: "Solution"

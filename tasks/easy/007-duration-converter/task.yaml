@@ -9,7 +9,7 @@ score:
     pads_minutes_with_zero: 1
     rejects_negative_minutes: 1
 language: "csharp"
-dotnet_version: "10"
+dotnet_version: "8"
 project_type: "classlib"
 generated_file: "Solution.cs"
 solution_class: "Solution"

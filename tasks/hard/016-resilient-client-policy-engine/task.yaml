@@ -11,7 +11,7 @@ score:
     composes_policies_in_deterministic_order: 3
     uses_fake_handler_without_network: 2
 language: "csharp"
-dotnet_version: "10"
+dotnet_version: "8"
 project_type: "classlib"
 generated_file: "Solution.cs"
 solution_class: "Solution"

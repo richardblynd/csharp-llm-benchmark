@@ -26,6 +26,7 @@ TAG_COLORS = (
 @dataclass(frozen=True)
 class BenchmarkResult:
     run_name: str
+    generator: str
     model: str
     company: str
     quantization: str
@@ -148,6 +149,7 @@ def parse_summary(
         or llm_payload.get("model")
         or run_name
     )
+    generator = normalize_generator(payload.get("generator"))
     company = str(payload.get("company") or llm_payload.get("company") or "")
     quantization = str(
         payload.get("quantization")
@@ -206,6 +208,7 @@ def parse_summary(
 
     return BenchmarkResult(
         run_name=run_name,
+        generator=generator,
         model=model,
         company=company,
         quantization=quantization,
@@ -279,14 +282,15 @@ def render_markdown(
         f"- Results directory: `{results_dir}`",
         f"- Benchmark runs: `{len(benchmark_results)}`",
         "",
-        "| Rank | Model | Company | Quantization | Total time | Total tokens | Max task tokens | Max token task | Tokens/s | Easy score | Medium score | Hard score | Final score |",
-        "| ---: | --- | --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |",
+        "| Rank | Generator | Model | Company | Quantization | Total time | Total tokens | Max task tokens | Max token task | Tokens/s | Easy score | Medium score | Hard score | Final score |",
+        "| ---: | --- | --- | --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
 
     for rank, result in enumerate(benchmark_results, start=1):
         lines.append(
-            "| {rank} | {model} | {company} | {quantization} | {total_time} | {total_tokens} | {highest_token_total} | {highest_token_task} | {tokens_per_second} | {easy_score} | {medium_score} | {hard_score} | {final_score} |".format(
+            "| {rank} | {generator} | {model} | {company} | {quantization} | {total_time} | {total_tokens} | {highest_token_total} | {highest_token_task} | {tokens_per_second} | {easy_score} | {medium_score} | {hard_score} | {final_score} |".format(
                 rank=rank,
+                generator=markdown_code(result.generator),
                 model=markdown_code(result.model),
                 company=markdown_code(result.company or "n/a"),
                 quantization=markdown_code(result.quantization or "n/a"),
@@ -431,11 +435,103 @@ def render_html(
       font: inherit;
     }}
 
+    input[type="range"] {{
+      min-height: 0;
+      padding: 0;
+      accent-color: var(--accent);
+    }}
+
     input:focus,
     select:focus,
     button:focus {{
       outline: 2px solid var(--accent);
       outline-offset: 2px;
+    }}
+
+    .score-range {{
+      gap: 8px;
+    }}
+
+    .range-fields {{
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }}
+
+    .range-fields input {{
+      min-height: 34px;
+      font-variant-numeric: tabular-nums;
+    }}
+
+    .range-slider {{
+      position: relative;
+      --range-thumb-size: 18px;
+      --range-track-height: 4px;
+      height: 26px;
+    }}
+
+    .range-base,
+    .range-fill {{
+      position: absolute;
+      top: 50%;
+      right: 0;
+      left: 0;
+      height: var(--range-track-height);
+      border-radius: 999px;
+      transform: translateY(-50%);
+    }}
+
+    .range-base {{
+      background: color-mix(in srgb, var(--line) 82%, var(--text) 18%);
+    }}
+
+    .range-fill {{
+      background: var(--accent);
+    }}
+
+    .range-slider input {{
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 26px;
+      background: transparent;
+      appearance: none;
+      margin: 0;
+      pointer-events: none;
+    }}
+
+    .range-slider input::-webkit-slider-runnable-track {{
+      height: var(--range-track-height);
+      background: transparent;
+    }}
+
+    .range-slider input::-moz-range-track {{
+      height: var(--range-track-height);
+      background: transparent;
+    }}
+
+    .range-slider input::-webkit-slider-thumb {{
+      width: var(--range-thumb-size);
+      height: var(--range-thumb-size);
+      border: 2px solid var(--panel);
+      border-radius: 999px;
+      background: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent-strong);
+      appearance: none;
+      box-sizing: border-box;
+      margin-top: calc((var(--range-track-height) - var(--range-thumb-size)) / 2);
+      pointer-events: auto;
+    }}
+
+    .range-slider input::-moz-range-thumb {{
+      width: var(--range-thumb-size);
+      height: var(--range-thumb-size);
+      border: 2px solid var(--panel);
+      border-radius: 999px;
+      background: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent-strong);
+      box-sizing: border-box;
+      pointer-events: auto;
     }}
 
     .column-options {{
@@ -875,7 +971,7 @@ def render_html(
     <section class="filters" aria-label="Table filters">
       <label>
         Search
-        <input id="search" type="search" placeholder="Model, company, quantization, task...">
+        <input id="search" type="search" placeholder="Generator, model, company, quantization, task...">
       </label>
       <label>
         Company
@@ -891,9 +987,18 @@ def render_html(
           {render_options(quantizations)}
         </select>
       </label>
-      <label>
-        Minimum final score
-        <input id="min-score" type="number" min="0" max="100" step="0.01" placeholder="0">
+      <label class="score-range">
+        Final score range
+        <span class="range-fields">
+          <input id="min-score" type="number" min="0" max="100" step="0.01" value="0" aria-label="Minimum final score">
+          <input id="max-score" type="number" min="0" max="100" step="0.01" value="100" aria-label="Maximum final score">
+        </span>
+        <span class="range-slider" aria-hidden="true">
+          <span class="range-base"></span>
+          <span class="range-fill" id="score-range-fill"></span>
+          <input id="min-score-slider" type="range" min="0" max="100" step="0.01" value="0" tabindex="-1">
+          <input id="max-score-slider" type="range" min="0" max="100" step="0.01" value="100" tabindex="-1">
+        </span>
       </label>
     </section>
 
@@ -918,6 +1023,7 @@ def render_html(
         <thead>
           <tr>
             <th class="numeric" rowspan="2" data-key="rank" data-type="number">Rank</th>
+            <th rowspan="2" data-key="generator" data-type="text">Generator</th>
             <th rowspan="2" data-key="model" data-type="text">Model</th>
             <th rowspan="2" data-key="company" data-type="text">Company</th>
             <th rowspan="2" data-key="quantization" data-type="text" title="Quantization" aria-label="Quantization">Quant.</th>
@@ -971,7 +1077,13 @@ def render_html(
       search: document.querySelector("#search"),
       company: document.querySelector("#company"),
       quantization: document.querySelector("#quantization"),
-      minScore: document.querySelector("#min-score"),
+    }};
+    const scoreRange = {{
+      minInput: document.querySelector("#min-score"),
+      maxInput: document.querySelector("#max-score"),
+      minSlider: document.querySelector("#min-score-slider"),
+      maxSlider: document.querySelector("#max-score-slider"),
+      fill: document.querySelector("#score-range-fill"),
     }};
     const columnToggles = {{
       token: document.querySelector("#show-token-columns"),
@@ -1024,11 +1136,53 @@ def render_html(
       return `${{hours.toString().padStart(2, "0")}}:${{minutes.toString().padStart(2, "0")}}:${{remainingSeconds.toString().padStart(2, "0")}}`;
     }}
 
+    function clampScore(value, fallback) {{
+      const number = Number(value);
+      if (!Number.isFinite(number)) {{
+        return fallback;
+      }}
+      return Math.max(0, Math.min(100, number));
+    }}
+
+    function formatScoreInput(value) {{
+      return Number.isInteger(value) ? value.toString() : value.toFixed(2).replace(/0+$/, "").replace(/\\.$/, "");
+    }}
+
+    function setScoreRange(minScore, maxScore) {{
+      scoreRange.minInput.value = formatScoreInput(minScore);
+      scoreRange.maxInput.value = formatScoreInput(maxScore);
+      scoreRange.minSlider.value = minScore;
+      scoreRange.maxSlider.value = maxScore;
+      scoreRange.fill.style.left = `${{minScore}}%`;
+      scoreRange.fill.style.right = `${{100 - maxScore}}%`;
+    }}
+
+    function syncScoreRange(changedSide, shouldApply = true) {{
+      let minScore = clampScore(scoreRange.minInput.value, 0);
+      let maxScore = clampScore(scoreRange.maxInput.value, 100);
+
+      if (changedSide === "min" && minScore > maxScore) {{
+        maxScore = minScore;
+      }} else if (changedSide === "max" && maxScore < minScore) {{
+        minScore = maxScore;
+      }} else if (minScore > maxScore) {{
+        const previousMin = minScore;
+        minScore = maxScore;
+        maxScore = previousMin;
+      }}
+
+      setScoreRange(minScore, maxScore);
+      if (shouldApply) {{
+        applyFilters();
+      }}
+    }}
+
     function rowMatches(row) {{
       const query = normalize(filters.search.value);
       const company = filters.company.value;
       const quantization = filters.quantization.value;
-      const minScore = Number(filters.minScore.value);
+      const minScore = clampScore(scoreRange.minInput.value, 0);
+      const maxScore = clampScore(scoreRange.maxInput.value, 100);
 
       if (query && !normalize(row.dataset.search).includes(query)) {{
         return false;
@@ -1039,11 +1193,9 @@ def render_html(
       if (quantization && row.dataset.quantization !== quantization) {{
         return false;
       }}
-      if (Number.isFinite(minScore) && filters.minScore.value !== "") {{
-        const finalScore = numberValue(row, "finalScore");
-        if (finalScore < minScore) {{
-          return false;
-        }}
+      const finalScore = numberValue(row, "finalScore");
+      if (finalScore < minScore || finalScore > maxScore) {{
+        return false;
       }}
       return true;
     }}
@@ -1332,6 +1484,17 @@ def render_html(
       input.addEventListener("change", applyFilters);
     }}
 
+    scoreRange.minInput.addEventListener("change", () => syncScoreRange("min"));
+    scoreRange.maxInput.addEventListener("change", () => syncScoreRange("max"));
+    scoreRange.minSlider.addEventListener("input", () => {{
+      scoreRange.minInput.value = scoreRange.minSlider.value;
+      syncScoreRange("min");
+    }});
+    scoreRange.maxSlider.addEventListener("input", () => {{
+      scoreRange.maxInput.value = scoreRange.maxSlider.value;
+      syncScoreRange("max");
+    }});
+
     for (const toggle of Object.values(columnToggles)) {{
       toggle.addEventListener("change", applyColumnVisibility);
     }}
@@ -1362,11 +1525,12 @@ def render_html(
       filters.search.value = "";
       filters.company.value = "";
       filters.quantization.value = "";
-      filters.minScore.value = "";
+      setScoreRange(0, 100);
       applyFilters();
     }});
 
     updateSortIndicators(table.querySelector('th[data-key="rank"]'));
+    setScoreRange(0, 100);
     applyColumnVisibility();
     applyFilters();
   </script>
@@ -1392,6 +1556,7 @@ def render_html_row(
     search_text = " ".join(
         [
             str(rank),
+            result.generator,
             result.model,
             result.company,
             result.quantization,
@@ -1409,6 +1574,7 @@ def render_html_row(
     return (
         "          <tr "
         f'data-rank="{rank}" '
+        f'data-generator="{escape_attr(result.generator)}" '
         f'data-model="{escape_attr(result.model)}" '
         f'data-company="{escape_attr(result.company)}" '
         f'data-quantization="{escape_attr(result.quantization)}" '
@@ -1424,6 +1590,7 @@ def render_html_row(
         f'data-series-color="{escape_attr(series_color)}" '
         f'data-search="{escape_attr(search_text)}">'
         f'<td class="numeric">{rank}</td>'
+        f"<td>{escape_html(result.generator)}</td>"
         f'<td class="model"><button class="model-button" type="button" data-model-filter="{escape_attr(result.model)}">{escape_html(result.model)}</button></td>'
         f'<td>{escape_html(result.company or "n/a")}</td>'
         f"<td>{quantization_cell}</td>"
@@ -1462,6 +1629,12 @@ def infer_quantization(run_name: str) -> str | None:
     if match is None:
         return None
     return match.group(1).upper()
+
+
+def normalize_generator(value: Any) -> str:
+    if str(value or "llm").strip().lower() == "opencode":
+        return "OpenCode"
+    return "LLM"
 
 
 def sum_optional_numbers(values: Iterable[Any]) -> float | None:

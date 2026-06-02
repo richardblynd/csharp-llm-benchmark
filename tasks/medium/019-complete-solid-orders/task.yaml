@@ -10,7 +10,7 @@ score:
     uses_small_interfaces_for_receipt_and_persistence: 3
     depends_on_testable_abstractions: 4
 language: "csharp"
-dotnet_version: "10"
+dotnet_version: "8"
 project_type: "classlib"
 generated_file: "Solution.cs"
 solution_class: "Solution"

@@ -9,12 +9,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from benchmark.config import apply_cli_overrides, load_config
-from benchmark.llm_client import (
-    ExtractedCode,
-    LlmClient,
-    LlmUsage,
-    extract_solution_code,
+from benchmark.generation import (
+    GeneratedSolution,
+    SolutionGenerator,
+    create_solution_generator,
+    opencode_metadata_to_dict,
 )
+from benchmark.llm_client import LlmUsage
 from benchmark.report import (
     create_run_dir,
     find_highest_token_task,
@@ -43,13 +44,6 @@ class PendingGeneration:
     index: int
     task: Task
     task_dir: Path
-
-
-@dataclass(frozen=True)
-class GeneratedSolution:
-    extracted: ExtractedCode
-    llm_response_time_seconds: float
-    llm_usage: LlmUsage
 
 
 @dataclass
@@ -148,6 +142,20 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--model")
     run.add_argument("--model-label")
     run.add_argument("--company")
+    run.add_argument(
+        "--generator",
+        choices=("llm", "opencode"),
+        help="Solution generator to use. Defaults to benchmark.generator.",
+    )
+    run.add_argument(
+        "--opencode-version",
+        help="Pinned OpenCode package version to install for opencode runs.",
+    )
+    run.add_argument(
+        "--opencode-timeout-seconds",
+        type=int,
+        help="Timeout for OpenCode install and session commands.",
+    )
     run.add_argument("--task-id", help="Run only one task by id, e.g. easy-001")
     run.add_argument(
         "--resume",
@@ -206,6 +214,9 @@ def _run(args: argparse.Namespace) -> int:
         output_dir=args.output_dir,
         task_id=args.task_id,
         evaluation_workers=args.evaluation_workers,
+        generator=args.generator,
+        opencode_version=args.opencode_version,
+        opencode_timeout_seconds=args.opencode_timeout_seconds,
     )
     if args.resume is None and args.resume_dir is not None:
         raise ValueError("--resume-dir requires --resume")
@@ -232,14 +243,17 @@ def _run(args: argparse.Namespace) -> int:
             quantization=config.llm.quantization,
         )
 
-    client = LlmClient(config.llm)
+    solution_generator = create_solution_generator(config)
     runner = DockerRunner(config.docker)
     task_scores: list[TaskScore | None] = [None] * len(tasks)
     dashboard_rows = [DashboardRow(task) for task in tasks]
     header_lines = [
         f"Run directory: {run_dir}",
+        f"Generator: {config.benchmark.generator}",
         f"Evaluation workers: {config.benchmark.evaluation_workers}",
     ]
+    if config.benchmark.generator == "opencode":
+        header_lines.append(f"OpenCode version: {config.opencode.version}")
     if config.llm.requests_per_minute is not None:
         header_lines.append(
             f"LLM rate limit: {config.llm.requests_per_minute} requests/minute"
@@ -277,7 +291,7 @@ def _run(args: argparse.Namespace) -> int:
         if next_task_index < len(tasks):
             pending_generation, current_generation = _queue_generation(
                 generation_executor,
-                client,
+                solution_generator,
                 tasks[next_task_index],
                 run_dir,
                 index=next_task_index,
@@ -328,6 +342,10 @@ def _run(args: argparse.Namespace) -> int:
                     artifact_dir=current_generation.task_dir,
                     llm_response_time_seconds=generated.llm_response_time_seconds,
                     llm_usage=generated.llm_usage,
+                    generator=generated.generator,
+                    opencode_metadata=opencode_metadata_to_dict(
+                        generated.opencode_metadata
+                    ),
                 )
                 pending[evaluation_future] = PendingEvaluation(
                     current_generation.index,
@@ -345,7 +363,7 @@ def _run(args: argparse.Namespace) -> int:
                 if next_task_index < len(tasks):
                     pending_generation, current_generation = _queue_generation(
                         generation_executor,
-                        client,
+                        solution_generator,
                         tasks[next_task_index],
                         run_dir,
                         index=next_task_index,
@@ -446,7 +464,7 @@ def _cancel_pending_work(
 
 def _queue_generation(
     executor: ThreadPoolExecutor,
-    client: LlmClient,
+    generator: SolutionGenerator,
     task: Task,
     run_dir: Path,
     *,
@@ -455,34 +473,18 @@ def _queue_generation(
     task_dir = run_dir / "tasks" / task.id
     task_dir.mkdir(parents=True, exist_ok=True)
     pending_generation = PendingGeneration(index, task, task_dir)
-    return executor.submit(_generate_solution, client, task, task_dir), pending_generation
+    return (
+        executor.submit(_generate_solution, generator, task, task_dir),
+        pending_generation,
+    )
 
 
 def _generate_solution(
-    client: LlmClient,
+    generator: SolutionGenerator,
     task: Task,
     task_dir: Path,
 ) -> GeneratedSolution:
-    prompt = task.prompt
-    (task_dir / "prompt.md").write_text(prompt, encoding="utf-8")
-
-    llm_response = client.complete(prompt)
-    (task_dir / "response.md").write_text(llm_response.content, encoding="utf-8")
-    required_public_class = task.solution_class if task.difficulty == "easy" else None
-    extracted = extract_solution_code(
-        llm_response.content,
-        required_public_class=required_public_class,
-    )
-    if extracted.code is not None:
-        generated_path = task_dir / task.generated_file
-        generated_path.parent.mkdir(parents=True, exist_ok=True)
-        generated_path.write_text(extracted.code, encoding="utf-8")
-
-    return GeneratedSolution(
-        extracted=extracted,
-        llm_response_time_seconds=llm_response.response_time_seconds,
-        llm_usage=llm_response.usage,
-    )
+    return generator.generate(task, task_dir)
 
 
 def _completed_task_scores(task_scores: list[TaskScore | None]) -> list[TaskScore]:
@@ -565,6 +567,10 @@ def _read_task_result_json(path: Path) -> TaskRunResult:
         extraction_warnings=_string_tuple(data.get("extraction_warnings")),
         extraction_error=_optional_text(data.get("extraction_error")),
         infrastructure_error=_optional_text(data.get("infrastructure_error")),
+        generator=str(data.get("generator") or "llm"),
+        opencode_metadata=(
+            data.get("opencode") if isinstance(data.get("opencode"), dict) else None
+        ),
     )
 
 

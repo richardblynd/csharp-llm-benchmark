@@ -9,7 +9,7 @@ score:
     ignores_blank_categories: 1
     returns_empty_dictionary_for_empty_input: 1
 language: "csharp"
-dotnet_version: "10"
+dotnet_version: "8"
 project_type: "classlib"
 generated_file: "Solution.cs"
 solution_class: "Solution"

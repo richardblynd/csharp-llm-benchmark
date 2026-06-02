@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from benchmark.llm_client import LlmUsage
 from benchmark.runner import TaskRunResult
@@ -19,6 +20,8 @@ class TaskScore:
     earned_test_points: float
     passed_tests: tuple[str, ...]
     failed_tests: tuple[str, ...]
+    generator: str = "llm"
+    opencode_metadata: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -44,6 +47,8 @@ def score_task(task: Task, result: TaskRunResult) -> TaskScore:
             earned_test_points=0,
             passed_tests=result.passed_tests,
             failed_tests=result.failed_tests,
+            generator=result.generator,
+            opencode_metadata=result.opencode_metadata,
         )
 
     if result.status == "infrastructure_error":
@@ -58,6 +63,8 @@ def score_task(task: Task, result: TaskRunResult) -> TaskScore:
             earned_test_points=0,
             passed_tests=result.passed_tests,
             failed_tests=result.failed_tests,
+            generator=result.generator,
+            opencode_metadata=result.opencode_metadata,
         )
 
     earned_test_points = sum(
@@ -77,6 +84,8 @@ def score_task(task: Task, result: TaskRunResult) -> TaskScore:
         earned_test_points=earned_test_points,
         passed_tests=result.passed_tests,
         failed_tests=result.failed_tests,
+        generator=result.generator,
+        opencode_metadata=result.opencode_metadata,
     )
 
 

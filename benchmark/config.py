@@ -33,11 +33,12 @@ class BenchmarkConfig:
     max_attempts_per_task: int = 1
     task_id: str | None = None
     evaluation_workers: int = 1
+    generator: str = "llm"
 
 
 @dataclass(frozen=True)
 class DockerConfig:
-    image: str = "csharp-llm-benchmark-dotnet10"
+    image: str = "csharp-llm-benchmark-dotnet8"
     timeout_seconds: int = 60
     memory_limit: str = "512m"
     cpus: str = "1.0"
@@ -48,10 +49,29 @@ class DockerConfig:
 
 
 @dataclass(frozen=True)
+class OpenCodeConfig:
+    version: str | None = None
+    package: str = "opencode-ai"
+    docker_image: str = "csharp-llm-benchmark-opencode"
+    cache_dir: Path = Path(".cache/opencode")
+    timeout_seconds: int = 900
+    keep_timed_out_containers: bool = False
+    max_steps: int = 40
+    network: str = "bridge"
+    container_base_url: str | None = None
+    context_limit: int | None = None
+    output_limit: int | None = None
+    compaction_auto: bool = True
+    compaction_prune: bool = True
+    compaction_reserved: int | None = 10000
+
+
+@dataclass(frozen=True)
 class AppConfig:
     llm: LlmConfig = field(default_factory=LlmConfig)
     benchmark: BenchmarkConfig = field(default_factory=BenchmarkConfig)
     docker: DockerConfig = field(default_factory=DockerConfig)
+    opencode: OpenCodeConfig = field(default_factory=OpenCodeConfig)
 
 
 def load_config(path: Path | None) -> AppConfig:
@@ -62,6 +82,10 @@ def load_config(path: Path | None) -> AppConfig:
     llm_data = data.get("llm", {})
     benchmark_data = data.get("benchmark", {})
     docker_data = data.get("docker", {})
+    opencode_data = data.get("opencode", {})
+    opencode_compaction_data = opencode_data.get("compaction", {})
+    if not isinstance(opencode_compaction_data, dict):
+        raise ValueError("opencode.compaction must be a mapping when set")
 
     api_key = (
         os.environ.get("LLM_API_KEY")
@@ -75,7 +99,7 @@ def load_config(path: Path | None) -> AppConfig:
     )
     company = _optional_string(llm_data.get("company"))
 
-    return AppConfig(
+    config = AppConfig(
         llm=LlmConfig(
             base_url=str(llm_data.get("base_url", LlmConfig.base_url)).rstrip("/"),
             api_key=api_key,
@@ -115,6 +139,10 @@ def load_config(path: Path | None) -> AppConfig:
                 ),
                 "benchmark.evaluation_workers",
             ),
+            generator=_generator_value(
+                benchmark_data.get("generator", BenchmarkConfig.generator),
+                "benchmark.generator",
+            ),
         ),
         docker=DockerConfig(
             image=str(docker_data.get("image", DockerConfig.image)),
@@ -130,7 +158,70 @@ def load_config(path: Path | None) -> AppConfig:
             read_only=bool(docker_data.get("read_only", DockerConfig.read_only)),
             cap_drop=tuple(docker_data.get("cap_drop", list(DockerConfig.cap_drop))),
         ),
+        opencode=OpenCodeConfig(
+            version=_optional_string(opencode_data.get("version")),
+            package=str(opencode_data.get("package", OpenCodeConfig.package)),
+            docker_image=str(
+                opencode_data.get("docker_image", OpenCodeConfig.docker_image)
+            ),
+            cache_dir=Path(
+                str(opencode_data.get("cache_dir", OpenCodeConfig.cache_dir))
+            ),
+            timeout_seconds=_positive_int(
+                opencode_data.get(
+                    "timeout_seconds",
+                    OpenCodeConfig.timeout_seconds,
+                ),
+                "opencode.timeout_seconds",
+            ),
+            keep_timed_out_containers=_bool_value(
+                opencode_data.get(
+                    "keep_timed_out_containers",
+                    OpenCodeConfig.keep_timed_out_containers,
+                ),
+                "opencode.keep_timed_out_containers",
+            ),
+            max_steps=_positive_int(
+                opencode_data.get("max_steps", OpenCodeConfig.max_steps),
+                "opencode.max_steps",
+            ),
+            network=str(opencode_data.get("network", OpenCodeConfig.network)),
+            container_base_url=_optional_string(
+                opencode_data.get("container_base_url")
+            ),
+            context_limit=_optional_positive_int(
+                opencode_data.get("context_limit"),
+                "opencode.context_limit",
+            ),
+            output_limit=_optional_positive_int(
+                opencode_data.get("output_limit"),
+                "opencode.output_limit",
+            ),
+            compaction_auto=_bool_value(
+                opencode_compaction_data.get(
+                    "auto",
+                    OpenCodeConfig.compaction_auto,
+                ),
+                "opencode.compaction.auto",
+            ),
+            compaction_prune=_bool_value(
+                opencode_compaction_data.get(
+                    "prune",
+                    OpenCodeConfig.compaction_prune,
+                ),
+                "opencode.compaction.prune",
+            ),
+            compaction_reserved=_optional_positive_int(
+                opencode_compaction_data.get(
+                    "reserved",
+                    OpenCodeConfig.compaction_reserved,
+                ),
+                "opencode.compaction.reserved",
+            ),
+        ),
     )
+    _validate_config(config)
+    return config
 
 
 def apply_cli_overrides(
@@ -145,8 +236,11 @@ def apply_cli_overrides(
     output_dir: str | None = None,
     task_id: str | None = None,
     evaluation_workers: int | None = None,
+    generator: str | None = None,
+    opencode_version: str | None = None,
+    opencode_timeout_seconds: int | None = None,
 ) -> AppConfig:
-    return AppConfig(
+    updated = AppConfig(
         llm=LlmConfig(
             base_url=(base_url or config.llm.base_url).rstrip("/"),
             api_key=api_key or config.llm.api_key,
@@ -181,9 +275,43 @@ def apply_cli_overrides(
                 if evaluation_workers is not None
                 else config.benchmark.evaluation_workers
             ),
+            generator=(
+                _generator_value(generator, "benchmark.generator")
+                if generator is not None
+                else config.benchmark.generator
+            ),
         ),
         docker=config.docker,
+        opencode=OpenCodeConfig(
+            version=(
+                _optional_string(opencode_version)
+                if opencode_version is not None
+                else config.opencode.version
+            ),
+            package=config.opencode.package,
+            docker_image=config.opencode.docker_image,
+            cache_dir=config.opencode.cache_dir,
+            timeout_seconds=(
+                _positive_int(
+                    opencode_timeout_seconds,
+                    "opencode.timeout_seconds",
+                )
+                if opencode_timeout_seconds is not None
+                else config.opencode.timeout_seconds
+            ),
+            keep_timed_out_containers=config.opencode.keep_timed_out_containers,
+            max_steps=config.opencode.max_steps,
+            network=config.opencode.network,
+            container_base_url=config.opencode.container_base_url,
+            context_limit=config.opencode.context_limit,
+            output_limit=config.opencode.output_limit,
+            compaction_auto=config.opencode.compaction_auto,
+            compaction_prune=config.opencode.compaction_prune,
+            compaction_reserved=config.opencode.compaction_reserved,
+        ),
     )
+    _validate_config(updated)
+    return updated
 
 
 def _optional_string(value: Any) -> str | None:
@@ -200,6 +328,20 @@ def _positive_int(value: Any, name: str) -> int:
     return number
 
 
+def _generator_value(value: Any, name: str) -> str:
+    text = str(value).strip().lower()
+    if text not in {"llm", "opencode"}:
+        raise ValueError(f"{name} must be 'llm' or 'opencode'")
+    return text
+
+
+def _validate_config(config: AppConfig) -> None:
+    if config.benchmark.generator == "opencode" and not config.opencode.version:
+        raise ValueError(
+            "opencode.version is required when benchmark.generator is 'opencode'"
+        )
+
+
 def _optional_positive_int(value: Any, name: str) -> int | None:
     if value is None:
         return None
@@ -209,3 +351,14 @@ def _optional_positive_int(value: Any, name: str) -> int | None:
     if number < 0:
         raise ValueError(f"{name} must be at least 1 when set")
     return number
+
+
+def _bool_value(value: Any, name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"true", "yes", "on", "1"}:
+        return True
+    if text in {"false", "no", "off", "0"}:
+        return False
+    raise ValueError(f"{name} must be a boolean")

@@ -10,7 +10,7 @@ score:
     put_products_updates_or_returns_404: 3
     keeps_state_in_memory_during_integration_test: 1
 language: "csharp"
-dotnet_version: "10"
+dotnet_version: "8"
 project_type: "webapi"
 generated_file: "Controllers/ProductsController.cs"
 solution_class: "Solution"

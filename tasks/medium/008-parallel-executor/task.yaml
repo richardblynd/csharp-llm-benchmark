@@ -10,7 +10,7 @@ score:
     respects_cancellation: 4
     handles_empty_list: 1
 language: "csharp"
-dotnet_version: "10"
+dotnet_version: "8"
 project_type: "classlib"
 generated_file: "Solution.cs"
 solution_class: "Solution"

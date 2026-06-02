@@ -12,7 +12,7 @@ score:
     validates_input_and_inconsistent_ids: 3
     lists_documents_for_tenant_in_deterministic_order: 2
 language: "csharp"
-dotnet_version: "10"
+dotnet_version: "8"
 project_type: "webapi"
 generated_file: "Controllers/DocumentsController.cs"
 solution_class: "Solution"

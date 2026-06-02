@@ -53,6 +53,7 @@ def write_summary(
     model_label = config.llm.effective_model_label
     payload: dict[str, Any] = {
         "generated_at": generated_at,
+        "generator": config.benchmark.generator,
         "model": config.llm.model,
         "modelLabel": model_label,
         "company": config.llm.company,
@@ -68,6 +69,30 @@ def write_summary(
             "timeout_seconds": config.llm.timeout_seconds,
             "requests_per_minute": config.llm.requests_per_minute,
         },
+        "opencode": (
+            {
+                "version": config.opencode.version,
+                "package": config.opencode.package,
+                "docker_image": config.opencode.docker_image,
+                "cache_dir": str(config.opencode.cache_dir),
+                "timeout_seconds": config.opencode.timeout_seconds,
+                "keep_timed_out_containers": (
+                    config.opencode.keep_timed_out_containers
+                ),
+                "max_steps": config.opencode.max_steps,
+                "network": config.opencode.network,
+                "container_base_url": config.opencode.container_base_url,
+                "context_limit": config.opencode.context_limit,
+                "output_limit": config.opencode.output_limit,
+                "compaction": {
+                    "auto": config.opencode.compaction_auto,
+                    "prune": config.opencode.compaction_prune,
+                    "reserved": config.opencode.compaction_reserved,
+                },
+            }
+            if config.benchmark.generator == "opencode"
+            else None
+        ),
         "score": {
             "earned_points": score.earned_points,
             "available_points": score.available_points,
@@ -111,6 +136,7 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         "# C# LLM Benchmark Summary",
         "",
         f"- Generated at: `{payload['generated_at']}`",
+        f"- Generator: `{_format_generator(payload.get('generator'))}`",
         f"- Model label: `{payload['modelLabel']}`",
         f"- Model: `{payload['model']}`",
         f"- Company: `{payload['company'] or 'n/a'}`",
@@ -197,3 +223,9 @@ def _format_tokens(tokens: int | None) -> str:
     if tokens is None:
         return "unavailable"
     return str(tokens)
+
+
+def _format_generator(generator: Any) -> str:
+    if str(generator or "llm").lower() == "opencode":
+        return "OpenCode"
+    return "LLM"

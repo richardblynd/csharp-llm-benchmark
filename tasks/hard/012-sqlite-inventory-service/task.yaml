@@ -12,7 +12,7 @@ score:
     queries_products_and_movements_by_period: 3
     disposes_resources_without_invalidating_external_connection: 2
 language: "csharp"
-dotnet_version: "10"
+dotnet_version: "8"
 project_type: "classlib"
 generated_file: "Solution.cs"
 solution_class: "Solution"

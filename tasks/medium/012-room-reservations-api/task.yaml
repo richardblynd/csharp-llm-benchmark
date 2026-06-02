@@ -10,7 +10,7 @@ score:
     accepts_same_time_in_different_rooms: 3
     lists_room_reservations_in_order: 2
 language: "csharp"
-dotnet_version: "10"
+dotnet_version: "8"
 project_type: "webapi"
 generated_file: "Controllers/ReservationsController.cs"
 solution_class: "Solution"

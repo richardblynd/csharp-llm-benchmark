@@ -9,7 +9,7 @@ score:
     lowercases_keys: 1
     returns_empty_dictionary_for_blank_text: 1
 language: "csharp"
-dotnet_version: "10"
+dotnet_version: "8"
 project_type: "classlib"
 generated_file: "Solution.cs"
 solution_class: "Solution"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import socket
 import threading
 import time
 import urllib.error
@@ -12,7 +13,9 @@ from typing import Any
 from benchmark.config import LlmConfig
 
 
-SYSTEM_PROMPT = """Generate one complete C# source file targeting .NET 10.
+SYSTEM_PROMPT = """Generate one complete C# source file for the provided project.
+The code will be compiled with the .NET 8 SDK, but prefer conservative, broadly supported C# and standard BCL APIs.
+Do not use preview features or .NET-version-specific APIs unless the task explicitly requires them.
 Return exactly one fenced ```csharp code block, with no text outside it.
 Do not declare a C# namespace; top-level using directives are allowed.
 Use only the .NET SDK/BCL and package references already present in the task project; do not add or require extra third-party or NuGet packages.
@@ -42,6 +45,20 @@ class LlmUsage:
     completion_tokens: int | None = None
     total_tokens: int | None = None
     reasoning_tokens: int | None = None
+
+
+class LlmTimeoutError(RuntimeError):
+    def __init__(self, message: str, response_time_seconds: float):
+        super().__init__(message)
+        self.response_time_seconds = response_time_seconds
+
+
+class LlmHttpError(RuntimeError):
+    def __init__(self, status_code: int, details: str, response_time_seconds: float):
+        super().__init__(f"LLM HTTP error {status_code}: {_truncate_error(details)}")
+        self.status_code = status_code
+        self.details = details
+        self.response_time_seconds = response_time_seconds
 
 
 class LlmClient:
@@ -76,10 +93,31 @@ class LlmClient:
                 request, timeout=self.config.timeout_seconds
             ) as response:
                 raw_json = json.loads(response.read().decode("utf-8"))
+        except (TimeoutError, socket.timeout) as exc:
+            response_time_seconds = time.perf_counter() - started_at
+            raise LlmTimeoutError(
+                (
+                    "LLM request timed out after "
+                    f"{response_time_seconds:.2f}s "
+                    f"(timeout: {self.config.timeout_seconds}s)."
+                ),
+                response_time_seconds,
+            ) from exc
         except urllib.error.HTTPError as exc:
+            response_time_seconds = time.perf_counter() - started_at
             details = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"LLM HTTP error {exc.code}: {details}") from exc
+            raise LlmHttpError(exc.code, details, response_time_seconds) from exc
         except urllib.error.URLError as exc:
+            response_time_seconds = time.perf_counter() - started_at
+            if _is_timeout_reason(exc.reason):
+                raise LlmTimeoutError(
+                    (
+                        "LLM request timed out after "
+                        f"{response_time_seconds:.2f}s "
+                        f"(timeout: {self.config.timeout_seconds}s)."
+                    ),
+                    response_time_seconds,
+                ) from exc
             raise RuntimeError(f"Could not reach LLM server: {exc.reason}") from exc
 
         response_time_seconds = time.perf_counter() - started_at
@@ -91,6 +129,19 @@ class LlmClient:
             response_time_seconds=response_time_seconds,
             usage=_parse_usage(raw_json),
         )
+
+
+def _is_timeout_reason(reason) -> bool:
+    if isinstance(reason, (TimeoutError, socket.timeout)):
+        return True
+    return "timed out" in str(reason).lower()
+
+
+def _truncate_error(details: str, limit: int = 500) -> str:
+    normalized = details.strip()
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[:limit].rstrip() + "..."
 
 
 class RequestRateLimiter:
@@ -120,6 +171,7 @@ def extract_solution_code(
     response_text: str,
     *,
     required_public_class: str | None = "Solution",
+    preserve_unfenced_code: bool = False,
 ) -> ExtractedCode:
     warnings: list[str] = []
 
@@ -131,14 +183,15 @@ def extract_solution_code(
         if language and language.lower() not in {"csharp", "cs"}:
             warnings.append(f"Used a non-csharp markdown block: {language}.")
     else:
-        code = _extract_unfenced_code(response_text)
+        code = response_text if preserve_unfenced_code else _extract_unfenced_code(response_text)
         if code is None:
             return ExtractedCode(
                 code=None,
                 warnings=tuple(warnings),
                 error="Could not find reliable C# code in the LLM response.",
             )
-        warnings.append("Extracted code from an unfenced response.")
+        if not preserve_unfenced_code:
+            warnings.append("Extracted code from an unfenced response.")
 
     code = code.strip()
     if not code:
@@ -156,7 +209,8 @@ def extract_solution_code(
         )
 
     if required_public_class and not re.search(
-        rf"\bpublic\s+class\s+{re.escape(required_public_class)}\b", code
+        _public_class_declaration_pattern(required_public_class),
+        code,
     ):
         return ExtractedCode(
             code=None,
@@ -191,8 +245,7 @@ def _first_fence_text(text: str) -> str:
 def _extract_unfenced_code(text: str) -> str | None:
     starts = [
         r"\busing\b",
-        r"\bpublic\s+class\s+Solution\b",
-        r"\bpublic\s+static\b",
+        _public_class_declaration_pattern("Solution"),
         r"\bclass\s+Solution\b",
         r"\bclass\b",
         r"\brecord\b",
@@ -203,6 +256,14 @@ def _extract_unfenced_code(text: str) -> str | None:
         if match:
             return text[match.start() :]
     return None
+
+
+def _public_class_declaration_pattern(class_name: str) -> str:
+    return (
+        rf"\bpublic\s+"
+        rf"(?:[A-Za-z_][A-Za-z0-9_]*\s+)*"
+        rf"class\s+{re.escape(class_name)}\b"
+    )
 
 
 def _declares_namespace(code: str) -> bool:
