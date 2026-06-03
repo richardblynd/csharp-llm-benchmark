@@ -4,6 +4,7 @@ import argparse
 import json
 import shutil
 import sys
+import unicodedata
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -78,17 +79,148 @@ class DashboardRenderer:
         self.rendered_once = True
 
     def _render_lines(self) -> list[str]:
-        lines = [*self.header_lines, "", "Tasks:"]
-        for row in self.rows:
-            lines.extend(
-                [
-                    f"Task {row.task.id}: {row.task.name}",
-                    f"  LLM: {row.llm}",
-                    f"  Tokens: {row.tokens}",
-                    f"  Evaluation: {row.evaluation}",
-                ]
+        terminal_width = shutil.get_terminal_size(fallback=(120, 24)).columns
+        return [*self.header_lines, "", "Tasks:", *_render_dashboard_table(
+            self.rows,
+            terminal_width=terminal_width,
+        )]
+
+
+def _render_dashboard_table(
+    rows: list[DashboardRow],
+    *,
+    terminal_width: int,
+) -> list[str]:
+    columns = [
+        ("Task", [row.task.id for row in rows], 6, 12, "left"),
+        ("Name", [row.task.name for row in rows], 12, 34, "left"),
+        ("LLM", [row.llm for row in rows], 14, 32, "left"),
+        ("Tokens", [row.tokens for row in rows], 16, 20, "right"),
+        ("Evaluation", [row.evaluation for row in rows], 26, 48, "left"),
+    ]
+    widths = _fit_table_widths(
+        [
+            min(
+                max(
+                    _terminal_text_width(header),
+                    *(_terminal_text_width(value) for value in values),
+                ),
+                maximum,
             )
-        return lines
+            for header, values, _minimum, maximum, _align in columns
+        ],
+        minimums=[minimum for _header, _values, minimum, _maximum, _align in columns],
+        terminal_width=terminal_width,
+    )
+    headers = [header for header, _values, _minimum, _maximum, _align in columns]
+    alignments = [align for _header, _values, _minimum, _maximum, align in columns]
+    separator = _format_table_separator(widths)
+    lines = [
+        separator,
+        _format_table_row(headers, widths, alignments),
+        separator,
+    ]
+    for row in rows:
+        lines.append(
+            _format_table_row(
+                [
+                    row.task.id,
+                    row.task.name,
+                    row.llm,
+                    row.tokens,
+                    row.evaluation,
+                ],
+                widths,
+                alignments,
+            )
+        )
+    lines.append(separator)
+    return lines
+
+
+def _fit_table_widths(
+    desired_widths: list[int],
+    *,
+    minimums: list[int],
+    terminal_width: int,
+) -> list[int]:
+    table_padding = 3 * len(desired_widths) + 1
+    available_width = max(sum(minimums), terminal_width - table_padding)
+    widths = [max(width, minimum) for width, minimum in zip(desired_widths, minimums)]
+    while sum(widths) > available_width:
+        candidates = [
+            index
+            for index, width in enumerate(widths)
+            if width > minimums[index]
+        ]
+        if not candidates:
+            break
+        index = max(
+            candidates,
+            key=lambda candidate: widths[candidate] - minimums[candidate],
+        )
+        widths[index] -= 1
+    return widths
+
+
+def _format_table_separator(widths: list[int]) -> str:
+    return "+" + "+".join("-" * (width + 2) for width in widths) + "+"
+
+
+def _format_table_row(
+    values: list[str],
+    widths: list[int],
+    alignments: list[str],
+) -> str:
+    cells = []
+    for value, width, alignment in zip(values, widths, alignments):
+        text = _truncate_table_cell(value, width)
+        if alignment == "right":
+            cells.append(" " + _pad_table_cell(text, width, alignment) + " ")
+        else:
+            cells.append(" " + _pad_table_cell(text, width, alignment) + " ")
+    return "|" + "|".join(cells) + "|"
+
+
+def _truncate_table_cell(value: str, width: int) -> str:
+    if _terminal_text_width(value) <= width:
+        return value
+    if width <= 3:
+        return _truncate_to_terminal_width(value, width)
+    return _truncate_to_terminal_width(value, width - 3) + "..."
+
+
+def _pad_table_cell(value: str, width: int, alignment: str) -> str:
+    padding = max(width - _terminal_text_width(value), 0)
+    if alignment == "right":
+        return (" " * padding) + value
+    return value + (" " * padding)
+
+
+def _truncate_to_terminal_width(value: str, width: int) -> str:
+    result: list[str] = []
+    used_width = 0
+    for character in value:
+        character_width = _terminal_character_width(character)
+        if used_width + character_width > width:
+            break
+        result.append(character)
+        used_width += character_width
+    return "".join(result)
+
+
+def _terminal_text_width(value: str) -> int:
+    return sum(_terminal_character_width(character) for character in value)
+
+
+def _terminal_character_width(character: str) -> int:
+    if unicodedata.combining(character):
+        return 0
+    if unicodedata.category(character) in {"Cf", "Mn", "Me"}:
+        return 0
+    if unicodedata.east_asian_width(character) in {"F", "W"}:
+        return 2
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:
