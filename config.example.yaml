@@ -5,7 +5,13 @@ llm:
   modelLabel: "local-model-label"
   company: "local-company"
   quantization: "not-specified"
-  temperature: 0.0
+  temperatures:
+    - 0.2
+    - 0.4
+    - 0.6
+  top_p: 0.95
+  top_k: 50
+  repetition_penalty: 1.0
   seed: 42
   timeout_seconds: 120
   # Optional API request throttle. Use null or omit to disable.

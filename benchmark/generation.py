@@ -319,7 +319,15 @@ class OpenCodeGenerator:
         return config
 
     def _model_config(self, model: str) -> dict[str, Any]:
-        config: dict[str, Any] = {"name": model}
+        config: dict[str, Any] = {
+            "name": model,
+            "options": {
+                "temperature": self._llm.temperature,
+                "top_p": self._llm.top_p,
+                "top_k": self._llm.top_k,
+                "repetition_penalty": self._llm.repetition_penalty,
+            },
+        }
         limit: dict[str, int] = {}
         if self._opencode.context_limit is not None:
             limit["context"] = self._opencode.context_limit

@@ -46,6 +46,7 @@ class TaskRunResult:
     infrastructure_error: str | None = None
     generator: str = "llm"
     opencode_metadata: dict[str, Any] | None = None
+    temperature: float | None = None
 
 
 class DockerRunner:
@@ -72,10 +73,12 @@ class DockerRunner:
         llm_usage: LlmUsage,
         generator: str = "llm",
         opencode_metadata: dict[str, Any] | None = None,
+        temperature: float | None = None,
     ) -> TaskRunResult:
         metadata = {
             "generator": generator,
             "opencode_metadata": opencode_metadata,
+            "temperature": temperature,
         }
         if extracted_code.code is None:
             return TaskRunResult(
@@ -120,6 +123,7 @@ class DockerRunner:
                         llm_usage=llm_usage,
                         generator=generator,
                         opencode_metadata=opencode_metadata,
+                        temperature=temperature,
                     )
 
             try:
@@ -133,6 +137,7 @@ class DockerRunner:
                         llm_usage=llm_usage,
                         generator=generator,
                         opencode_metadata=opencode_metadata,
+                        temperature=temperature,
                     )
 
                 setup = self._copy_workspace_to_container(
@@ -153,6 +158,7 @@ class DockerRunner:
                         llm_usage=llm_usage,
                         generator=generator,
                         opencode_metadata=opencode_metadata,
+                        temperature=temperature,
                     )
 
                 build = self._exec_in_container(
@@ -174,6 +180,7 @@ class DockerRunner:
                         llm_usage=llm_usage,
                         generator=generator,
                         opencode_metadata=opencode_metadata,
+                        temperature=temperature,
                     )
                 if build.timed_out:
                     return self._infrastructure_result(
@@ -185,6 +192,7 @@ class DockerRunner:
                         llm_usage=llm_usage,
                         generator=generator,
                         opencode_metadata=opencode_metadata,
+                        temperature=temperature,
                     )
                 if build.exit_code != 0:
                     return TaskRunResult(
@@ -221,6 +229,7 @@ class DockerRunner:
                         llm_usage=llm_usage,
                         generator=generator,
                         opencode_metadata=opencode_metadata,
+                        temperature=temperature,
                     )
                 if test.timed_out:
                     return self._infrastructure_result(
@@ -233,6 +242,7 @@ class DockerRunner:
                         llm_usage=llm_usage,
                         generator=generator,
                         opencode_metadata=opencode_metadata,
+                        temperature=temperature,
                     )
 
                 copy_results = self._copy_results_from_container(
@@ -251,6 +261,7 @@ class DockerRunner:
                         llm_usage=llm_usage,
                         generator=generator,
                         opencode_metadata=opencode_metadata,
+                        temperature=temperature,
                     )
 
                 passed, failed = parse_trx_results(workdir / "TestResults")
@@ -531,6 +542,7 @@ class DockerRunner:
         llm_usage: LlmUsage,
         generator: str = "llm",
         opencode_metadata: dict[str, Any] | None = None,
+        temperature: float | None = None,
     ) -> TaskRunResult:
         return TaskRunResult(
             task_id=task.id,
@@ -546,6 +558,7 @@ class DockerRunner:
             infrastructure_error=message,
             generator=generator,
             opencode_metadata=opencode_metadata,
+            temperature=temperature,
         )
 
 
@@ -596,6 +609,7 @@ def write_result_json(
         "infrastructure_error": result.infrastructure_error,
         "generator": result.generator,
         "opencode": result.opencode_metadata,
+        "temperature": result.temperature,
         "build_exit_code": result.build.exit_code if result.build else None,
         "test_exit_code": result.test.exit_code if result.test else None,
     }

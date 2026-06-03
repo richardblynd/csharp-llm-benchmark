@@ -36,6 +36,8 @@ class BenchmarkResult:
     highest_token_task_total_tokens: int | None
     tokens_per_second: float | None
     difficulty_scores: dict[str, float | None]
+    selected_temperature: float | None
+    temperature_scores: dict[str, float | None]
     final_score: float | None
     earned_points: float | None
     available_points: float | None
@@ -201,6 +203,10 @@ def parse_summary(
     final_score = calculate_score(tasks)
     if final_score is None:
         final_score = optional_float(payload.get("score", {}).get("final_score"))
+    selected_temperature = optional_float(
+        payload.get("selected_temperature", llm_payload.get("temperature"))
+    )
+    temperature_scores = parse_temperature_scores(payload)
 
     tokens_per_second = None
     if total_tokens is not None and total_seconds is not None and total_seconds > 0:
@@ -218,10 +224,34 @@ def parse_summary(
         highest_token_task_total_tokens=highest_token_task_total_tokens,
         tokens_per_second=tokens_per_second,
         difficulty_scores=difficulty_scores,
+        selected_temperature=selected_temperature,
+        temperature_scores=temperature_scores,
         final_score=final_score,
         earned_points=earned_points,
         available_points=available_points,
     )
+
+
+def parse_temperature_scores(payload: dict[str, Any]) -> dict[str, float | None]:
+    scores: dict[str, float | None] = {}
+    raw_scores = payload.get("temperature_scores")
+    if not isinstance(raw_scores, list):
+        return scores
+
+    for entry in raw_scores:
+        if not isinstance(entry, dict):
+            continue
+        temperature = optional_float(entry.get("temperature"))
+        if temperature is None:
+            continue
+        score = entry.get("score")
+        final_score = (
+            optional_float(score.get("final_score"))
+            if isinstance(score, dict)
+            else None
+        )
+        scores[format_temperature_label(temperature)] = final_score
+    return scores
 
 
 def find_highest_token_task(
@@ -270,11 +300,48 @@ def calculate_score(tasks: Iterable[dict[str, Any]]) -> float | None:
     return round((earned / available) * 100, 2)
 
 
+def collect_temperature_labels(
+    benchmark_results: list[BenchmarkResult],
+) -> list[str]:
+    labels = {
+        label
+        for result in benchmark_results
+        for label in result.temperature_scores
+    }
+    return sorted(labels, key=temperature_label_sort_key)
+
+
+def temperature_label_sort_key(label: str) -> tuple[int, float | str]:
+    number = optional_float(label)
+    if number is not None:
+        return (0, number)
+    return (1, label)
+
+
+def temperature_score_key(index: int) -> str:
+    return f"temperaturescore{index}"
+
+
+def format_temperature_label(temperature: float) -> str:
+    return f"{temperature:g}"
+
+
 def render_markdown(
     benchmark_results: list[BenchmarkResult],
     results_dir: Path,
 ) -> str:
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    temperature_labels = collect_temperature_labels(benchmark_results)
+    temperature_headers = " | ".join(
+        f"Temp {label}" for label in temperature_labels
+    )
+    temperature_alignments = " | ".join("---:" for _label in temperature_labels)
+    temperature_header_segment = (
+        f" | Best temp | {temperature_headers}" if temperature_headers else " | Best temp"
+    )
+    temperature_alignment_segment = (
+        f" | ---: | {temperature_alignments}" if temperature_alignments else " | ---:"
+    )
     lines = [
         "# LLM Benchmark Results",
         "",
@@ -282,13 +349,22 @@ def render_markdown(
         f"- Results directory: `{results_dir}`",
         f"- Benchmark runs: `{len(benchmark_results)}`",
         "",
-        "| Rank | Generator | Model | Company | Quantization | Total time | Total tokens | Max task tokens | Max token task | Tokens/s | Easy score | Medium score | Hard score | Final score |",
-        "| ---: | --- | --- | --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |",
+        f"| Rank | Generator | Model | Company | Quantization | Total time | Total tokens | Max task tokens | Max token task | Tokens/s | Easy score | Medium score | Hard score | Final score{temperature_header_segment} |",
+        f"| ---: | --- | --- | --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---:{temperature_alignment_segment} |",
     ]
 
     for rank, result in enumerate(benchmark_results, start=1):
+        temperature_values = " | ".join(
+            format_score(result.temperature_scores.get(label))
+            for label in temperature_labels
+        )
+        temperature_value_segment = (
+            f" | {format_temperature(result.selected_temperature)} | {temperature_values}"
+            if temperature_values
+            else f" | {format_temperature(result.selected_temperature)}"
+        )
         lines.append(
-            "| {rank} | {generator} | {model} | {company} | {quantization} | {total_time} | {total_tokens} | {highest_token_total} | {highest_token_task} | {tokens_per_second} | {easy_score} | {medium_score} | {hard_score} | {final_score} |".format(
+            "| {rank} | {generator} | {model} | {company} | {quantization} | {total_time} | {total_tokens} | {highest_token_total} | {highest_token_task} | {tokens_per_second} | {easy_score} | {medium_score} | {hard_score} | {final_score}{temperature_values} |".format(
                 rank=rank,
                 generator=markdown_code(result.generator),
                 model=markdown_code(result.model),
@@ -303,6 +379,7 @@ def render_markdown(
                 medium_score=format_score(result.difficulty_scores["medium"]),
                 hard_score=format_score(result.difficulty_scores["hard"]),
                 final_score=format_score(result.final_score),
+                temperature_values=temperature_value_segment,
             )
         )
 
@@ -315,6 +392,11 @@ def render_html(
     results_dir: Path,
 ) -> str:
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    temperature_columns = [
+        (label, temperature_score_key(index))
+        for index, label in enumerate(collect_temperature_labels(benchmark_results))
+    ]
+    temperature_header_cells = render_temperature_header_cells(temperature_columns)
     companies = sorted(
         {result.company for result in benchmark_results if result.company}
     )
@@ -325,7 +407,7 @@ def render_html(
         sorted({result.quantization or "n/a" for result in benchmark_results})
     )
     rows = "\n".join(
-        render_html_row(rank, result, quantization_colors)
+        render_html_row(rank, result, quantization_colors, temperature_columns)
         for rank, result in enumerate(benchmark_results, start=1)
     )
 
@@ -1011,6 +1093,10 @@ def render_html(
         <input id="show-score-columns" type="checkbox">
         Show Easy/Medium/Hard scores
       </label>
+      <label class="check-option">
+        <input id="show-temperature-columns" type="checkbox">
+        Show temperature scores
+      </label>
     </section>
 
     <div class="summary">
@@ -1031,6 +1117,7 @@ def render_html(
             <th id="token-group-heading" class="group-heading" colspan="1" rowspan="2" data-key="totalTokens" data-type="number">Total tokens</th>
             <th class="numeric" rowspan="2" data-key="tokensPerSecond" data-type="number">Tokens/s</th>
             <th id="score-group-heading" class="group-heading" colspan="1" rowspan="2" data-key="finalScore" data-type="number">Score final</th>
+            <th id="temperature-group-heading" class="group-heading" colspan="1" rowspan="2" data-key="selectedTemperature" data-type="number">Best temp</th>
           </tr>
           <tr id="secondary-header-row" hidden>
             <th id="total-token-heading" class="numeric" data-key="totalTokens" data-type="number" hidden>Total</th>
@@ -1040,6 +1127,8 @@ def render_html(
             <th class="numeric" data-key="mediumScore" data-type="number" data-column-group="score" hidden>Medium</th>
             <th class="numeric" data-key="hardScore" data-type="number" data-column-group="score" hidden>Hard</th>
             <th id="final-score-heading" class="numeric" data-key="finalScore" data-type="number" hidden>Final</th>
+            <th id="selected-temperature-heading" class="numeric" data-key="selectedTemperature" data-type="number" hidden>Best</th>
+            {temperature_header_cells}
           </tr>
         </thead>
         <tbody>
@@ -1088,6 +1177,7 @@ def render_html(
     const columnToggles = {{
       token: document.querySelector("#show-token-columns"),
       score: document.querySelector("#show-score-columns"),
+      temperature: document.querySelector("#show-temperature-columns"),
     }};
     const visibleCount = document.querySelector("#visible-count");
     const empty = document.querySelector("#empty");
@@ -1095,8 +1185,10 @@ def render_html(
     const secondaryHeaderRow = document.querySelector("#secondary-header-row");
     const tokenGroupHeading = document.querySelector("#token-group-heading");
     const scoreGroupHeading = document.querySelector("#score-group-heading");
+    const temperatureGroupHeading = document.querySelector("#temperature-group-heading");
     const totalTokenHeading = document.querySelector("#total-token-heading");
     const finalScoreHeading = document.querySelector("#final-score-heading");
+    const selectedTemperatureHeading = document.querySelector("#selected-temperature-heading");
     const scoreChart = document.querySelector("#score-chart");
     const chartCount = document.querySelector("#chart-count");
     const tradeoffPlot = document.querySelector("#tradeoff-plot");
@@ -1455,6 +1547,7 @@ def render_html(
     function applyColumnVisibility() {{
       const showTokenColumns = columnToggles.token.checked;
       const showScoreColumns = columnToggles.score.checked;
+      const showTemperatureColumns = columnToggles.temperature.checked;
 
       table.querySelectorAll('[data-column-group="token"]').forEach((cell) => {{
         cell.hidden = !showTokenColumns;
@@ -1462,8 +1555,11 @@ def render_html(
       table.querySelectorAll('[data-column-group="score"]').forEach((cell) => {{
         cell.hidden = !showScoreColumns;
       }});
+      table.querySelectorAll('[data-column-group="temperature"]').forEach((cell) => {{
+        cell.hidden = !showTemperatureColumns;
+      }});
 
-      secondaryHeaderRow.hidden = !showTokenColumns && !showScoreColumns;
+      secondaryHeaderRow.hidden = !showTokenColumns && !showScoreColumns && !showTemperatureColumns;
 
       tokenGroupHeading.textContent = showTokenColumns ? "Tokens" : "Total tokens";
       tokenGroupHeading.colSpan = showTokenColumns ? 3 : 1;
@@ -1476,6 +1572,13 @@ def render_html(
       scoreGroupHeading.rowSpan = showScoreColumns ? 1 : 2;
       scoreGroupHeading.dataset.expanded = showScoreColumns ? "true" : "false";
       finalScoreHeading.hidden = !showScoreColumns;
+
+      const temperatureColumnCount = table.querySelectorAll('thead [data-column-group="temperature"]').length;
+      temperatureGroupHeading.textContent = showTemperatureColumns ? "Temperature" : "Best temp";
+      temperatureGroupHeading.colSpan = showTemperatureColumns ? temperatureColumnCount + 1 : 1;
+      temperatureGroupHeading.rowSpan = showTemperatureColumns ? 1 : 2;
+      temperatureGroupHeading.dataset.expanded = showTemperatureColumns ? "true" : "false";
+      selectedTemperatureHeading.hidden = !showTemperatureColumns;
       applyExtremes();
     }}
 
@@ -1543,6 +1646,7 @@ def render_html_row(
     rank: int,
     result: BenchmarkResult,
     quantization_colors: dict[str, dict[str, str]],
+    temperature_columns: list[tuple[str, str]],
 ) -> str:
     easy_score = result.difficulty_scores["easy"]
     medium_score = result.difficulty_scores["medium"]
@@ -1553,6 +1657,11 @@ def render_html_row(
         quantization_colors,
     )
     series_color = quantization_colors[quantization_label]["bg"]
+    temperature_data_attrs = render_temperature_data_attrs(
+        result,
+        temperature_columns,
+    )
+    temperature_cells = render_temperature_score_cells(result, temperature_columns)
     search_text = " ".join(
         [
             str(rank),
@@ -1569,6 +1678,11 @@ def render_html_row(
             format_score(medium_score),
             format_score(hard_score),
             format_score(result.final_score),
+            format_temperature(result.selected_temperature),
+            *(
+                format_score(result.temperature_scores.get(label))
+                for label, _key in temperature_columns
+            ),
         ]
     )
     return (
@@ -1587,6 +1701,8 @@ def render_html_row(
         f'data-medium-score="{number_attr(medium_score)}" '
         f'data-hard-score="{number_attr(hard_score)}" '
         f'data-final-score="{number_attr(result.final_score)}" '
+        f'data-selected-temperature="{number_attr(result.selected_temperature)}" '
+        f"{temperature_data_attrs}"
         f'data-series-color="{escape_attr(series_color)}" '
         f'data-search="{escape_attr(search_text)}">'
         f'<td class="numeric">{rank}</td>'
@@ -1603,7 +1719,38 @@ def render_html_row(
         f'<td class="numeric" data-column-group="score" hidden>{escape_html(format_score(medium_score))}</td>'
         f'<td class="numeric" data-column-group="score" hidden>{escape_html(format_score(hard_score))}</td>'
         f'<td class="numeric" data-extreme-key="finalScore">{escape_html(format_score(result.final_score))}</td>'
+        f'<td class="numeric">{escape_html(format_temperature(result.selected_temperature))}</td>'
+        f"{temperature_cells}"
         "</tr>"
+    )
+
+
+def render_temperature_header_cells(
+    temperature_columns: list[tuple[str, str]],
+) -> str:
+    return "\n            ".join(
+        f'<th class="numeric" data-key="{escape_attr(key)}" data-type="number" data-column-group="temperature" hidden>Temp {escape_html(label)}</th>'
+        for label, key in temperature_columns
+    )
+
+
+def render_temperature_data_attrs(
+    result: BenchmarkResult,
+    temperature_columns: list[tuple[str, str]],
+) -> str:
+    return "".join(
+        f'data-{key}="{number_attr(result.temperature_scores.get(label))}" '
+        for label, key in temperature_columns
+    )
+
+
+def render_temperature_score_cells(
+    result: BenchmarkResult,
+    temperature_columns: list[tuple[str, str]],
+) -> str:
+    return "".join(
+        f'<td class="numeric" data-column-group="temperature" hidden>{escape_html(format_score(result.temperature_scores.get(label)))}</td>'
+        for label, _key in temperature_columns
     )
 
 
@@ -1705,6 +1852,12 @@ def format_score(value: float | None) -> str:
     if value is None:
         return "n/a"
     return f"{value:.2f}"
+
+
+def format_temperature(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:g}"
 
 
 def build_tag_colors(values: Iterable[str]) -> dict[str, dict[str, str]]:

@@ -6,10 +6,10 @@ import shutil
 import sys
 import unicodedata
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from benchmark.config import apply_cli_overrides, load_config
+from benchmark.config import apply_cli_overrides, load_config, with_llm_temperature
 from benchmark.generation import (
     GeneratedSolution,
     SolutionGenerator,
@@ -24,7 +24,7 @@ from benchmark.report import (
     write_summary,
 )
 from benchmark.runner import DockerRunner, TaskRunResult, write_result_json
-from benchmark.scorer import TaskScore, score_benchmark, score_task
+from benchmark.scorer import BenchmarkScore, TaskScore, score_benchmark, score_task
 from benchmark.tasks import Task, load_tasks, validate_tasks
 
 
@@ -35,21 +35,35 @@ TESTS_RUNNING_STATUS = f"{RUNNING_ICON} running unit tests"
 
 @dataclass(frozen=True)
 class PendingEvaluation:
-    index: int
+    row_index: int
+    task_index: int
+    temperature_index: int
+    temperature: float
     task: Task
     task_dir: Path
 
 
 @dataclass(frozen=True)
 class PendingGeneration:
-    index: int
+    row_index: int
+    task_index: int
+    temperature_index: int
+    temperature: float
     task: Task
     task_dir: Path
+
+
+@dataclass(frozen=True)
+class TemperatureRun:
+    temperature: float
+    score: BenchmarkScore
+    task_scores: list[TaskScore]
 
 
 @dataclass
 class DashboardRow:
     task: Task
+    temperature: float | None = None
     llm: str = "waiting"
     tokens: str = ""
     evaluation: str = ""
@@ -92,7 +106,7 @@ def _render_dashboard_table(
     terminal_width: int,
 ) -> list[str]:
     columns = [
-        ("Task", [row.task.id for row in rows], 6, 12, "left"),
+        ("Task", [_dashboard_task_label(row) for row in rows], 6, 18, "left"),
         ("Name", [row.task.name for row in rows], 12, 34, "left"),
         ("LLM", [row.llm for row in rows], 14, 32, "left"),
         ("Tokens", [row.tokens for row in rows], 16, 20, "right"),
@@ -124,7 +138,7 @@ def _render_dashboard_table(
         lines.append(
             _format_table_row(
                 [
-                    row.task.id,
+                    _dashboard_task_label(row),
                     row.task.name,
                     row.llm,
                     row.tokens,
@@ -136,6 +150,12 @@ def _render_dashboard_table(
         )
     lines.append(separator)
     return lines
+
+
+def _dashboard_task_label(row: DashboardRow) -> str:
+    if row.temperature is None:
+        return row.task.id
+    return f"{row.task.id} @ {_format_temperature(row.temperature)}"
 
 
 def _fit_table_widths(
@@ -375,40 +395,155 @@ def _run(args: argparse.Namespace) -> int:
             quantization=config.llm.quantization,
         )
 
-    solution_generator = create_solution_generator(config)
+    temperature_runs = _run_task_major_temperatures(
+        config,
+        tasks,
+        run_dir=run_dir,
+        resume_from_index=resume_from_index,
+        resume_task_id=args.resume,
+    )
+
+    best_run = _select_best_temperature_run(temperature_runs)
+    best_config = with_llm_temperature(config, best_run.temperature)
+    write_summary(
+        run_dir,
+        config=best_config,
+        score=best_run.score,
+        task_scores=best_run.task_scores,
+        temperature_scores=temperature_runs,
+    )
+    print(f"Best temperature: {_format_temperature(best_run.temperature)}")
+    print(
+        f"Final score: {best_run.score.final_score} "
+        f"({best_run.score.earned_points:g}/{best_run.score.available_points:g})"
+    )
+    total_llm_time = sum(
+        task_score.llm_response_time_seconds for task_score in best_run.task_scores
+    )
+    print(f"Total LLM response time: {format_duration_hms(total_llm_time)}")
+    total_llm_tokens = _sum_known_tokens(
+        task_score.llm_usage.total_tokens for task_score in best_run.task_scores
+    )
+    print(f"Total LLM tokens: {_format_tokens(total_llm_tokens)}")
+    highest_token_task = find_highest_token_task(best_run.task_scores)
+    if highest_token_task is None:
+        print("Highest-token task: unavailable (token usage unavailable for all tasks)")
+    else:
+        print(
+            "Highest-token task: "
+            f"{highest_token_task.task_id} "
+            f"({_format_tokens(highest_token_task.llm_usage.total_tokens)}, "
+            f"LLM time: {highest_token_task.llm_response_time_seconds:.2f}s)"
+        )
+    if len(temperature_runs) > 1:
+        print("Temperature scores:")
+        for temperature_run in temperature_runs:
+            print(
+                "  "
+                f"{_format_temperature(temperature_run.temperature)}: "
+                f"{temperature_run.score.final_score} "
+                f"({temperature_run.score.earned_points:g}/"
+                f"{temperature_run.score.available_points:g})"
+            )
+    return 0
+
+
+def _run_task_major_temperatures(
+    config,
+    tasks: list[Task],
+    *,
+    run_dir: Path,
+    resume_from_index: int,
+    resume_task_id: str | None,
+) -> list[TemperatureRun]:
+    temperatures = config.llm.temperatures
+    multi_temperature = len(temperatures) > 1
+    temperature_configs = [
+        with_llm_temperature(config, temperature) for temperature in temperatures
+    ]
+    solution_generators = [
+        create_solution_generator(temperature_config)
+        for temperature_config in temperature_configs
+    ]
     runner = DockerRunner(config.docker)
-    task_scores: list[TaskScore | None] = [None] * len(tasks)
-    dashboard_rows = [DashboardRow(task) for task in tasks]
+    task_scores_by_temperature: list[list[TaskScore | None]] = [
+        [None] * len(tasks) for _temperature in temperatures
+    ]
+    dashboard_rows: list[DashboardRow] = []
+    queued_generations: list[PendingGeneration] = []
+
+    for task_index, task in enumerate(tasks):
+        for temperature_index, temperature in enumerate(temperatures):
+            row_index = len(dashboard_rows)
+            dashboard_rows.append(DashboardRow(task, temperature=temperature))
+            task_root_dir = _temperature_task_root(
+                run_dir,
+                temperature,
+                multi_temperature=multi_temperature,
+            )
+            task_dir = task_root_dir / "tasks" / task.id
+            result_path = task_dir / "result.json"
+            if resume_task_id is not None and result_path.exists():
+                _load_existing_task_score(
+                    task,
+                    result_path,
+                    task_scores_by_temperature[temperature_index],
+                    dashboard_rows,
+                    task_index=task_index,
+                    row_index=row_index,
+                    expected_temperature=temperature,
+                    prefix="resumed ",
+                )
+                continue
+            if resume_task_id is not None and task_index < resume_from_index:
+                raise RuntimeError(
+                    "Cannot resume because a prior result.json file is missing for "
+                    f"{task.id} at temperature {_format_temperature(temperature)}: "
+                    f"{result_path}"
+                )
+            queued_generations.append(
+                PendingGeneration(
+                    row_index=row_index,
+                    task_index=task_index,
+                    temperature_index=temperature_index,
+                    temperature=temperature,
+                    task=task,
+                    task_dir=task_dir,
+                )
+            )
+
     header_lines = [
         f"Run directory: {run_dir}",
         f"Generator: {config.benchmark.generator}",
+        "Temperature order: task-major",
         f"Evaluation workers: {config.benchmark.evaluation_workers}",
     ]
+    if multi_temperature:
+        header_lines.append(
+            "Configured temperatures: "
+            + ", ".join(
+                _format_temperature(temperature)
+                for temperature in temperatures
+            )
+        )
     if config.benchmark.generator == "opencode":
         header_lines.append(f"OpenCode version: {config.opencode.version}")
     if config.llm.requests_per_minute is not None:
         header_lines.append(
             f"LLM rate limit: {config.llm.requests_per_minute} requests/minute"
         )
-    if args.resume is not None:
-        _load_resumed_task_scores(
-            tasks,
-            task_scores,
-            dashboard_rows,
-            run_dir,
-            resume_from_index=resume_from_index,
-        )
+    if resume_task_id is not None:
         header_lines.extend(
             [
-                f"Resume from: {args.resume}",
-                f"Reused completed tasks: {resume_from_index}",
+                f"Resume from: {resume_task_id}",
+                f"Queued missing task/temperature pairs: {len(queued_generations)}",
             ]
         )
     dashboard = DashboardRenderer(
         dashboard_rows,
         header_lines=header_lines,
     )
-    next_task_index = resume_from_index
+    next_generation_index = 0
     pending_generation: Future[GeneratedSolution] | None = None
     current_generation: PendingGeneration | None = None
     pending: dict[Future[TaskRunResult], PendingEvaluation] = {}
@@ -420,16 +555,18 @@ def _run(args: argparse.Namespace) -> int:
         max_workers=config.benchmark.evaluation_workers,
         thread_name_prefix="benchmark-eval",
     ) as evaluation_executor:
-        if next_task_index < len(tasks):
+        if next_generation_index < len(queued_generations):
             pending_generation, current_generation = _queue_generation(
                 generation_executor,
-                solution_generator,
-                tasks[next_task_index],
-                run_dir,
-                index=next_task_index,
+                solution_generators[
+                    queued_generations[next_generation_index].temperature_index
+                ],
+                queued_generations[next_generation_index],
             )
-            dashboard_rows[next_task_index].llm = LLM_RUNNING_STATUS
-            next_task_index += 1
+            dashboard_rows[
+                queued_generations[next_generation_index].row_index
+            ].llm = LLM_RUNNING_STATUS
+            next_generation_index += 1
         dashboard.render()
 
         while pending_generation is not None or pending:
@@ -450,8 +587,10 @@ def _run(args: argparse.Namespace) -> int:
                 try:
                     generated = pending_generation.result()
                 except Exception as exc:
-                    dashboard_rows[current_generation.index].llm = "error"
-                    dashboard_rows[current_generation.index].evaluation = "cancelled"
+                    dashboard_rows[current_generation.row_index].llm = "error"
+                    dashboard_rows[
+                        current_generation.row_index
+                    ].evaluation = "cancelled"
                     _cancel_pending_work(
                         runner,
                         pending_generation,
@@ -463,7 +602,7 @@ def _run(args: argparse.Namespace) -> int:
                         f"LLM generation failed for task "
                         f"{current_generation.task.id}: {exc}"
                     ) from exc
-                row = dashboard_rows[current_generation.index]
+                row = dashboard_rows[current_generation.row_index]
                 row.llm = f"{generated.llm_response_time_seconds:.2f}s"
                 row.tokens = _format_tokens(generated.llm_usage.total_tokens)
                 row.evaluation = TESTS_RUNNING_STATUS
@@ -478,11 +617,15 @@ def _run(args: argparse.Namespace) -> int:
                     opencode_metadata=opencode_metadata_to_dict(
                         generated.opencode_metadata
                     ),
+                    temperature=current_generation.temperature,
                 )
                 pending[evaluation_future] = PendingEvaluation(
-                    current_generation.index,
-                    current_generation.task,
-                    current_generation.task_dir,
+                    row_index=current_generation.row_index,
+                    task_index=current_generation.task_index,
+                    temperature_index=current_generation.temperature_index,
+                    temperature=current_generation.temperature,
+                    task=current_generation.task,
+                    task_dir=current_generation.task_dir,
                 )
                 _refresh_evaluation_statuses(
                     pending,
@@ -492,16 +635,20 @@ def _run(args: argparse.Namespace) -> int:
                 pending_generation = None
                 current_generation = None
 
-                if next_task_index < len(tasks):
+                if next_generation_index < len(queued_generations):
                     pending_generation, current_generation = _queue_generation(
                         generation_executor,
-                        solution_generator,
-                        tasks[next_task_index],
-                        run_dir,
-                        index=next_task_index,
+                        solution_generators[
+                            queued_generations[
+                                next_generation_index
+                            ].temperature_index
+                        ],
+                        queued_generations[next_generation_index],
                     )
-                    dashboard_rows[next_task_index].llm = LLM_RUNNING_STATUS
-                    next_task_index += 1
+                    dashboard_rows[
+                        queued_generations[next_generation_index].row_index
+                    ].llm = LLM_RUNNING_STATUS
+                    next_generation_index += 1
                 dashboard.render()
 
             for completed_future in completed_futures:
@@ -511,7 +658,7 @@ def _run(args: argparse.Namespace) -> int:
                 try:
                     result = completed_future.result()
                 except Exception as exc:
-                    dashboard_rows[pending_evaluation.index].evaluation = "error"
+                    dashboard_rows[pending_evaluation.row_index].evaluation = "error"
                     _cancel_pending_work(
                         runner,
                         pending_generation,
@@ -531,8 +678,10 @@ def _run(args: argparse.Namespace) -> int:
                     company=config.llm.company,
                 )
                 task_score = score_task(pending_evaluation.task, result)
-                task_scores[pending_evaluation.index] = task_score
-                dashboard_rows[pending_evaluation.index].evaluation = (
+                task_scores_by_temperature[pending_evaluation.temperature_index][
+                    pending_evaluation.task_index
+                ] = task_score
+                dashboard_rows[pending_evaluation.row_index].evaluation = (
                     _format_evaluation_status(
                         pending_evaluation.task,
                         result,
@@ -546,37 +695,20 @@ def _run(args: argparse.Namespace) -> int:
                 )
                 dashboard.render()
 
-    completed_task_scores = _completed_task_scores(task_scores)
-    benchmark_score = score_benchmark(completed_task_scores)
-    write_summary(
-        run_dir,
-        config=config,
-        score=benchmark_score,
-        task_scores=completed_task_scores,
-    )
-    print(
-        f"Final score: {benchmark_score.final_score} "
-        f"({benchmark_score.earned_points:g}/{benchmark_score.available_points:g})"
-    )
-    total_llm_time = sum(
-        task_score.llm_response_time_seconds for task_score in completed_task_scores
-    )
-    print(f"Total LLM response time: {format_duration_hms(total_llm_time)}")
-    total_llm_tokens = _sum_known_tokens(
-        task_score.llm_usage.total_tokens for task_score in completed_task_scores
-    )
-    print(f"Total LLM tokens: {_format_tokens(total_llm_tokens)}")
-    highest_token_task = find_highest_token_task(completed_task_scores)
-    if highest_token_task is None:
-        print("Highest-token task: unavailable (token usage unavailable for all tasks)")
-    else:
-        print(
-            "Highest-token task: "
-            f"{highest_token_task.task_id} "
-            f"({_format_tokens(highest_token_task.llm_usage.total_tokens)}, "
-            f"LLM time: {highest_token_task.llm_response_time_seconds:.2f}s)"
+    return [
+        TemperatureRun(
+            temperature=temperature,
+            score=score_benchmark(completed_task_scores),
+            task_scores=completed_task_scores,
         )
-    return 0
+        for temperature, completed_task_scores in zip(
+            temperatures,
+            (
+                _completed_task_scores(task_scores)
+                for task_scores in task_scores_by_temperature
+            ),
+        )
+    ]
 
 
 def _cancel_pending_work(
@@ -589,7 +721,7 @@ def _cancel_pending_work(
         pending_generation.cancel()
     for future, pending_evaluation in pending_evaluations.items():
         if not future.done():
-            rows[pending_evaluation.index].evaluation = "cancelled"
+            rows[pending_evaluation.row_index].evaluation = "cancelled"
         future.cancel()
     runner.cancel()
 
@@ -597,16 +729,17 @@ def _cancel_pending_work(
 def _queue_generation(
     executor: ThreadPoolExecutor,
     generator: SolutionGenerator,
-    task: Task,
-    run_dir: Path,
-    *,
-    index: int,
+    pending_generation: PendingGeneration,
 ) -> tuple[Future[GeneratedSolution], PendingGeneration]:
-    task_dir = run_dir / "tasks" / task.id
+    task_dir = pending_generation.task_dir
     task_dir.mkdir(parents=True, exist_ok=True)
-    pending_generation = PendingGeneration(index, task, task_dir)
     return (
-        executor.submit(_generate_solution, generator, task, task_dir),
+        executor.submit(
+            _generate_solution,
+            generator,
+            pending_generation.task,
+            task_dir,
+        ),
         pending_generation,
     )
 
@@ -626,48 +759,74 @@ def _completed_task_scores(task_scores: list[TaskScore | None]) -> list[TaskScor
     return completed
 
 
-def _load_resumed_task_scores(
-    tasks: list[Task],
+def _temperature_task_root(
+    run_dir: Path,
+    temperature: float,
+    *,
+    multi_temperature: bool,
+) -> Path:
+    if not multi_temperature:
+        return run_dir
+    return run_dir / "temperatures" / f"temperature-{_format_temperature(temperature)}"
+
+
+def _select_best_temperature_run(
+    temperature_runs: list[TemperatureRun],
+) -> TemperatureRun:
+    if not temperature_runs:
+        raise RuntimeError("No temperature runs completed.")
+    return max(
+        enumerate(temperature_runs),
+        key=lambda item: (
+            item[1].score.earned_points,
+            item[1].score.final_score,
+            -item[0],
+        ),
+    )[1]
+
+
+def _load_existing_task_score(
+    task: Task,
+    result_path: Path,
     task_scores: list[TaskScore | None],
     dashboard_rows: list[DashboardRow],
-    run_dir: Path,
     *,
-    resume_from_index: int,
+    task_index: int,
+    row_index: int,
+    expected_temperature: float,
+    prefix: str,
 ) -> None:
-    missing: list[str] = []
-    for index, task in enumerate(tasks[:resume_from_index]):
-        result_path = run_dir / "tasks" / task.id / "result.json"
-        if not result_path.exists():
-            missing.append(task.id)
-            continue
-
-        result = _read_task_result_json(result_path)
-        if result.task_id != task.id:
-            raise ValueError(
-                f"{result_path} belongs to {result.task_id}, expected {task.id}"
-            )
-
-        task_score = score_task(task, result)
-        task_scores[index] = task_score
-        dashboard_rows[index].llm = f"{task_score.llm_response_time_seconds:.2f}s"
-        dashboard_rows[index].tokens = _format_tokens(
-            task_score.llm_usage.total_tokens
+    result = _read_task_result_json(result_path)
+    if result.task_id != task.id:
+        raise ValueError(
+            f"{result_path} belongs to {result.task_id}, expected {task.id}"
         )
-        dashboard_rows[index].evaluation = (
-            "resumed "
-            + _format_evaluation_status(
-                task,
-                result,
-                task_score,
-            )
+    if result.temperature is not None and not _same_temperature(
+        result.temperature,
+        expected_temperature,
+    ):
+        raise ValueError(
+            f"{result_path} has temperature "
+            f"{_format_temperature(result.temperature)}, expected "
+            f"{_format_temperature(expected_temperature)}"
         )
+    if result.temperature is None:
+        result = replace(result, temperature=expected_temperature)
 
-    if missing:
-        joined = ", ".join(missing)
-        raise RuntimeError(
-            "Cannot resume because prior result.json files are missing for: "
-            f"{joined}"
+    task_score = score_task(task, result)
+    task_scores[task_index] = task_score
+    dashboard_rows[row_index].llm = f"{task_score.llm_response_time_seconds:.2f}s"
+    dashboard_rows[row_index].tokens = _format_tokens(
+        task_score.llm_usage.total_tokens
+    )
+    dashboard_rows[row_index].evaluation = (
+        prefix
+        + _format_evaluation_status(
+            task,
+            result,
+            task_score,
         )
+    )
 
 
 def _read_task_result_json(path: Path) -> TaskRunResult:
@@ -703,6 +862,7 @@ def _read_task_result_json(path: Path) -> TaskRunResult:
         opencode_metadata=(
             data.get("opencode") if isinstance(data.get("opencode"), dict) else None
         ),
+        temperature=_optional_float(data.get("temperature")),
     )
 
 
@@ -772,10 +932,10 @@ def _refresh_evaluation_statuses(
     for position, pending in enumerate(
         sorted(
             pending_evaluations.values(),
-            key=lambda pending: pending.index,
+            key=lambda pending: pending.row_index,
         )
     ):
-        rows[pending.index].evaluation = (
+        rows[pending.row_index].evaluation = (
             TESTS_RUNNING_STATUS
             if position < evaluation_workers
             else "waiting unit tests"
@@ -845,6 +1005,15 @@ def _optional_int(value) -> int | None:
         return None
 
 
+def _optional_float(value) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _optional_text(value) -> str | None:
     if value is None:
         return None
@@ -861,6 +1030,14 @@ def _format_tokens(tokens: int | None) -> str:
     if tokens is None:
         return "tokens unavailable"
     return f"{tokens} tokens"
+
+
+def _format_temperature(temperature: float) -> str:
+    return f"{temperature:g}"
+
+
+def _same_temperature(left: float, right: float) -> bool:
+    return abs(left - right) < 1e-9
 
 
 if __name__ == "__main__":

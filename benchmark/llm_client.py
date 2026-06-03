@@ -71,6 +71,9 @@ class LlmClient:
         payload: dict[str, Any] = {
             "model": self.config.model,
             "temperature": self.config.temperature,
+            "top_p": self.config.top_p,
+            "top_k": self.config.top_k,
+            "repetition_penalty": self.config.repetition_penalty,
             "seed": self.config.seed,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},

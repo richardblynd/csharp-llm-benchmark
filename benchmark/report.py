@@ -31,6 +31,7 @@ def write_summary(
     config: AppConfig,
     score: BenchmarkScore,
     task_scores: list[TaskScore],
+    temperature_scores: list[Any] | None = None,
 ) -> None:
     generated_at = datetime.now(timezone.utc).isoformat()
     total_llm_time = sum(
@@ -65,6 +66,10 @@ def write_summary(
             "company": config.llm.company,
             "quantization": config.llm.quantization,
             "temperature": config.llm.temperature,
+            "temperatures": list(config.llm.temperatures),
+            "top_p": config.llm.top_p,
+            "top_k": config.llm.top_k,
+            "repetition_penalty": config.llm.repetition_penalty,
             "seed": config.llm.seed,
             "timeout_seconds": config.llm.timeout_seconds,
             "requests_per_minute": config.llm.requests_per_minute,
@@ -98,6 +103,8 @@ def write_summary(
             "available_points": score.available_points,
             "final_score": score.final_score,
         },
+        "selected_temperature": config.llm.temperature,
+        "temperature_scores": _temperature_scores_payload(temperature_scores),
         "llm_response_time": {
             "total_seconds": total_llm_time,
             "average_seconds": average_llm_time,
@@ -131,6 +138,67 @@ def write_summary(
     )
 
 
+def _temperature_scores_payload(temperature_scores: list[Any] | None) -> list[dict[str, Any]]:
+    if not temperature_scores:
+        return []
+
+    payloads: list[dict[str, Any]] = []
+    for temperature_run in temperature_scores:
+        task_scores = list(temperature_run.task_scores)
+        score = temperature_run.score
+        total_llm_time = sum(
+            task_score.llm_response_time_seconds for task_score in task_scores
+        )
+        highest_token_task = find_highest_token_task(task_scores)
+        payloads.append(
+            {
+                "temperature": temperature_run.temperature,
+                "score": {
+                    "earned_points": score.earned_points,
+                    "available_points": score.available_points,
+                    "final_score": score.final_score,
+                },
+                "llm_response_time": {
+                    "total_seconds": total_llm_time,
+                    "average_seconds": (
+                        total_llm_time / len(task_scores) if task_scores else 0.0
+                    ),
+                },
+                "llm_token_usage": {
+                    "prompt_tokens": _sum_known_tokens(
+                        task_score.llm_usage.prompt_tokens
+                        for task_score in task_scores
+                    ),
+                    "completion_tokens": _sum_known_tokens(
+                        task_score.llm_usage.completion_tokens
+                        for task_score in task_scores
+                    ),
+                    "total_tokens": _sum_known_tokens(
+                        task_score.llm_usage.total_tokens
+                        for task_score in task_scores
+                    ),
+                    "reasoning_tokens": _sum_known_tokens(
+                        task_score.llm_usage.reasoning_tokens
+                        for task_score in task_scores
+                    ),
+                },
+                "highest_token_task": (
+                    {
+                        "task_id": highest_token_task.task_id,
+                        "total_tokens": highest_token_task.llm_usage.total_tokens,
+                        "llm_response_time_seconds": (
+                            highest_token_task.llm_response_time_seconds
+                        ),
+                    }
+                    if highest_token_task is not None
+                    else None
+                ),
+                "tasks": [asdict(task_score) for task_score in task_scores],
+            }
+        )
+    return payloads
+
+
 def _render_markdown(payload: dict[str, Any]) -> str:
     lines = [
         "# C# LLM Benchmark Summary",
@@ -141,6 +209,11 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         f"- Model: `{payload['model']}`",
         f"- Company: `{payload['company'] or 'n/a'}`",
         f"- Quantization: `{payload['quantization']}`",
+        f"- Selected temperature: `{_format_temperature(payload['selected_temperature'])}`",
+        f"- Configured temperatures: `{_format_temperature_list(payload['llm'].get('temperatures', []))}`",
+        f"- Top P: `{payload['llm'].get('top_p')}`",
+        f"- Top K: `{payload['llm'].get('top_k')}`",
+        f"- Repetition penalty: `{payload['llm'].get('repetition_penalty')}`",
         f"- Final score: `{payload['score']['final_score']}`",
         f"- Points: `{payload['score']['earned_points']} / {payload['score']['available_points']}`",
         f"- Total LLM response time: `{format_duration_hms(payload['llm_response_time']['total_seconds'])}`",
@@ -151,14 +224,16 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         f"- Reasoning tokens: `{_format_tokens(payload['llm_token_usage']['reasoning_tokens'])}`",
         _format_highest_token_task(payload["highest_token_task"]),
         "",
-        "| Task | Status | Points | Passed | Failed | LLM time | Tokens |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+        *_render_temperature_table(payload["temperature_scores"]),
+        "| Task | Status | Temperature | Points | Passed | Failed | LLM time | Tokens |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for task in payload["tasks"]:
         lines.append(
-            "| {task_id} | {status} | {earned_points} / {available_points} | {passed} | {failed} | {llm_time} | {tokens} |".format(
+            "| {task_id} | {status} | {temperature} | {earned_points} / {available_points} | {passed} | {failed} | {llm_time} | {tokens} |".format(
                 task_id=task["task_id"],
                 status=task["status"],
+                temperature=_format_temperature(task.get("temperature")),
                 earned_points=task["earned_points"],
                 available_points=task["available_points"],
                 passed=len(task["passed_tests"]),
@@ -169,6 +244,33 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         )
     lines.append("")
     return "\n".join(lines)
+
+
+def _render_temperature_table(temperature_scores: list[dict[str, Any]]) -> list[str]:
+    if len(temperature_scores) <= 1:
+        return []
+    lines = [
+        "| Temperature | Final score | Points | Total LLM time | Total tokens |",
+        "| ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for temperature_score in temperature_scores:
+        score = temperature_score["score"]
+        lines.append(
+            "| {temperature} | {final_score} | {earned_points} / {available_points} | {total_time} | {tokens} |".format(
+                temperature=_format_temperature(temperature_score["temperature"]),
+                final_score=score["final_score"],
+                earned_points=score["earned_points"],
+                available_points=score["available_points"],
+                total_time=format_duration_hms(
+                    temperature_score["llm_response_time"]["total_seconds"]
+                ),
+                tokens=_format_tokens(
+                    temperature_score["llm_token_usage"]["total_tokens"]
+                ),
+            )
+        )
+    lines.append("")
+    return lines
 
 
 def find_highest_token_task(task_scores: list[TaskScore]) -> TaskScore | None:
@@ -223,6 +325,18 @@ def _format_tokens(tokens: int | None) -> str:
     if tokens is None:
         return "unavailable"
     return str(tokens)
+
+
+def _format_temperature(temperature: Any) -> str:
+    if temperature is None:
+        return "n/a"
+    return f"{float(temperature):g}"
+
+
+def _format_temperature_list(temperatures: Any) -> str:
+    if not isinstance(temperatures, list):
+        return "n/a"
+    return ", ".join(_format_temperature(temperature) for temperature in temperatures)
 
 
 def _format_generator(generator: Any) -> str:

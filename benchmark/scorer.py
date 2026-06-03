@@ -22,6 +22,7 @@ class TaskScore:
     failed_tests: tuple[str, ...]
     generator: str = "llm"
     opencode_metadata: dict[str, Any] | None = None
+    temperature: float | None = None
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ def score_task(task: Task, result: TaskRunResult) -> TaskScore:
             failed_tests=result.failed_tests,
             generator=result.generator,
             opencode_metadata=result.opencode_metadata,
+            temperature=result.temperature,
         )
 
     if result.status == "infrastructure_error":
@@ -65,6 +67,7 @@ def score_task(task: Task, result: TaskRunResult) -> TaskScore:
             failed_tests=result.failed_tests,
             generator=result.generator,
             opencode_metadata=result.opencode_metadata,
+            temperature=result.temperature,
         )
 
     earned_test_points = sum(
@@ -86,6 +89,7 @@ def score_task(task: Task, result: TaskRunResult) -> TaskScore:
         failed_tests=result.failed_tests,
         generator=result.generator,
         opencode_metadata=result.opencode_metadata,
+        temperature=result.temperature,
     )
 
 

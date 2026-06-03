@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from benchmark.simple_yaml import load_yaml
+
+
+DEFAULT_TEMPERATURES = (0.2, 0.40, 0.60)
+DEFAULT_TOP_P = 0.95
+DEFAULT_TOP_K = 50
+DEFAULT_REPETITION_PENALTY = 1.0
 
 
 @dataclass(frozen=True)
@@ -16,7 +22,11 @@ class LlmConfig:
     model_label: str | None = None
     company: str | None = None
     quantization: str = "unknown"
-    temperature: float = 0.0
+    temperature: float = DEFAULT_TEMPERATURES[0]
+    temperatures: tuple[float, ...] = DEFAULT_TEMPERATURES
+    top_p: float = DEFAULT_TOP_P
+    top_k: int = DEFAULT_TOP_K
+    repetition_penalty: float = DEFAULT_REPETITION_PENALTY
     seed: int = 42
     timeout_seconds: int = 120
     requests_per_minute: int | None = None
@@ -98,6 +108,7 @@ def load_config(path: Path | None) -> AppConfig:
         llm_data.get("modelLabel", llm_data.get("model_label"))
     )
     company = _optional_string(llm_data.get("company"))
+    temperatures = _temperature_tuple(llm_data)
 
     config = AppConfig(
         llm=LlmConfig(
@@ -110,7 +121,20 @@ def load_config(path: Path | None) -> AppConfig:
                 _optional_string(llm_data.get("quantization"))
                 or LlmConfig.quantization
             ),
-            temperature=float(llm_data.get("temperature", LlmConfig.temperature)),
+            temperature=temperatures[0],
+            temperatures=temperatures,
+            top_p=_positive_float(
+                llm_data.get("top_p", LlmConfig.top_p),
+                "llm.top_p",
+            ),
+            top_k=_positive_int(llm_data.get("top_k", LlmConfig.top_k), "llm.top_k"),
+            repetition_penalty=_positive_float(
+                llm_data.get(
+                    "repetition_penalty",
+                    LlmConfig.repetition_penalty,
+                ),
+                "llm.repetition_penalty",
+            ),
             seed=int(llm_data.get("seed", LlmConfig.seed)),
             timeout_seconds=int(
                 llm_data.get("timeout_seconds", LlmConfig.timeout_seconds)
@@ -257,6 +281,10 @@ def apply_cli_overrides(
             ),
             quantization=config.llm.quantization,
             temperature=config.llm.temperature,
+            temperatures=config.llm.temperatures,
+            top_p=config.llm.top_p,
+            top_k=config.llm.top_k,
+            repetition_penalty=config.llm.repetition_penalty,
             seed=config.llm.seed,
             timeout_seconds=config.llm.timeout_seconds,
             requests_per_minute=config.llm.requests_per_minute,
@@ -314,6 +342,26 @@ def apply_cli_overrides(
     return updated
 
 
+def with_llm_temperature(config: AppConfig, temperature: float) -> AppConfig:
+    return replace(config, llm=replace(config.llm, temperature=temperature))
+
+
+def _temperature_tuple(llm_data: dict[str, Any]) -> tuple[float, ...]:
+    temperatures_value = llm_data.get("temperatures")
+    if temperatures_value is not None:
+        if not isinstance(temperatures_value, list):
+            raise ValueError("llm.temperatures must be a list of numbers")
+        temperatures = tuple(float(value) for value in temperatures_value)
+    elif "temperature" in llm_data:
+        temperatures = (float(llm_data["temperature"]),)
+    else:
+        temperatures = LlmConfig.temperatures
+
+    if not temperatures:
+        raise ValueError("llm.temperatures must contain at least one temperature")
+    return temperatures
+
+
 def _optional_string(value: Any) -> str | None:
     if value is None:
         return None
@@ -325,6 +373,13 @@ def _positive_int(value: Any, name: str) -> int:
     number = int(value)
     if number < 1:
         raise ValueError(f"{name} must be at least 1")
+    return number
+
+
+def _positive_float(value: Any, name: str) -> float:
+    number = float(value)
+    if number <= 0:
+        raise ValueError(f"{name} must be greater than 0")
     return number
 
 

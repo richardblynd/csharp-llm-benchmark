@@ -97,7 +97,25 @@ once:
 python -m benchmark.cli run --config config.yaml --evaluation-workers 2
 ```
 
+By default, each selected task is generated and evaluated once for each
+configured LLM temperature: `0.2`, `0.4` and `0.6`. The runner uses task-major
+order, so it runs task 1 at every configured temperature before moving to task
+2. The final benchmark score is the score from the temperature that earned the
+most points. The summary also records the score for every configured
+temperature.
+
+The direct LLM and OpenCode generators both send these sampling defaults unless
+overridden in `config.yaml`: `top_p: 0.95`, `top_k: 50` and
+`repetition_penalty: 1.0`.
+
 Reports are written under `results/<timestamp>_<modelLabel>_<quantization>/`.
+For multi-temperature runs, per-task artifacts are grouped under
+`temperatures/temperature-<value>/tasks/<task-id>/`, and the top-level
+`summary.json`/`summary.md` promotes the best temperature as the final result.
+When resuming a multi-temperature run, the runner reuses every existing
+`result.json` for each task/temperature pair and queues only missing pairs from
+the requested resume task onward. Tasks before the resume task must already have
+results for all configured temperatures.
 
 ## OpenCode generator
 
@@ -160,15 +178,19 @@ python benchmark/aggregate_benchmark_results.py
 By default, this writes `results/benchmark_results.md` and
 `results/benchmark_results.html`. Running the command again recreates those
 files and overwrites their previous contents. Both reports include the task
-with the highest token usage, how many tokens it consumed, and whether the run
-used the direct LLM generator or OpenCode. In the HTML report, the
-per-difficulty scores and highest-token task columns are hidden by default and
-can be shown from the column options above the table. The final score filter
-supports a min/max range with a visual slider. The HTML report also includes
-final-score and score-vs-time charts that follow the same filters and table
-ordering. Clicking a model name toggles the search filter for that model. The
-table highlights best visible values in blue and worst visible values in red
-for final score, total time, token usage, max task tokens, and tokens/s.
+with the highest token usage, how many tokens it consumed, whether the run used
+the direct LLM generator or OpenCode, the selected best temperature, and the
+score for every temperature recorded in `temperature_scores`. In the HTML
+report, the per-difficulty scores, highest-token task columns, and
+per-temperature score columns are hidden by default and can be shown from the
+column options above the table. Legacy single-temperature runs keep their best
+temperature value but do not create per-temperature score columns. The final
+score filter supports a min/max range with a visual slider. The HTML report
+also includes final-score and score-vs-time charts that follow the same filters
+and table ordering. Clicking a model name toggles the search filter for that
+model. The table highlights best visible values in blue and worst visible
+values in red for final score, total time, token usage, max task tokens, and
+tokens/s.
 
 Use `--results-dir` to read runs from a different directory, or `--output` to
 write the Markdown report to a different file. The HTML file defaults to the
@@ -226,6 +248,29 @@ llm:
   modelLabel: "qwen3.5-4b"
   company: "Alibaba"
   quantization: "Q4_K_M"
+```
+
+Configure benchmark temperatures in `config.yaml` under `llm.temperatures`.
+Omit the field to use the default `0.2`, `0.4` and `0.6` sweep. The legacy
+single-value `llm.temperature` field is still accepted for one-temperature
+runs:
+
+```yaml
+llm:
+  temperatures:
+    - 0.2
+    - 0.4
+    - 0.6
+```
+
+The sampling defaults below are sent for both direct LLM runs and OpenCode
+runs, and can be adjusted in the same `llm` section:
+
+```yaml
+llm:
+  top_p: 0.95
+  top_k: 50
+  repetition_penalty: 1.0
 ```
 
 You can also set a single task in `config.yaml`:
