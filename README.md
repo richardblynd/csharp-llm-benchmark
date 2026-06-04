@@ -104,9 +104,9 @@ order, so it runs task 1 at every configured temperature before moving to task
 most points. The summary also records the score for every configured
 temperature.
 
-The direct LLM and OpenCode generators both send these sampling defaults unless
-overridden in `config.yaml`: `top_p: 0.95`, `top_k: 50` and
-`repetition_penalty: 1.0`.
+The direct LLM and OpenCode generators omit optional sampling parameters unless
+they are configured in YAML or passed on the command line. When omitted, the
+provider, for example LM Studio, applies its own defaults.
 
 Reports are written under `results/<timestamp>_<modelLabel>_<quantization>/`.
 For multi-temperature runs, per-task artifacts are grouped under
@@ -134,6 +134,8 @@ benchmark:
 
 opencode:
   version: "1.1.64"
+  prepare_ahead: true
+  precreate_container: false
   # Optional, but useful for OpenAI-compatible/custom providers.
   context_limit: 131072
   output_limit: 8192
@@ -157,6 +159,14 @@ files, writes the configured `generated_file`, and the normal hidden-test Docker
 evaluation still runs separately with networking disabled. If `llm.base_url`
 points to `localhost` or `127.0.0.1`, the OpenCode container uses
 `host.docker.internal` unless `opencode.container_base_url` is configured.
+Before task generation starts, the runner performs the OpenCode install/cache
+check once per benchmark run. With `opencode.prepare_ahead: true`, it prepares
+the next task workspace, config and home directory while the current OpenCode
+session is running, but still starts only one LLM-backed OpenCode session at a
+time. Set `opencode.precreate_container: true` to also `docker create` that next
+task container ahead of time; the container is only started after the current
+session finishes. The per-task `opencode-home/` directory is transient and is
+removed after each OpenCode session completes.
 When `context_limit` and `output_limit` are set, the generated OpenCode config
 passes those model limits to the custom provider so automatic compaction can
 track the remaining context window. `opencode.compaction` controls OpenCode's
@@ -164,7 +174,8 @@ automatic context compaction behavior.
 
 Timed-out OpenCode containers are removed by default. For debugging a stuck
 agent, set `opencode.keep_timed_out_containers: true`; the timed-out container
-name is then recorded in the task `result.json` under `opencode.container_name`.
+name is then recorded in the task `result.json` under `opencode.container_name`,
+and the task `opencode-home/` directory is preserved for inspection.
 
 ## Aggregate benchmark results
 
@@ -188,9 +199,10 @@ temperature value but do not create per-temperature score columns. The final
 score filter supports a min/max range with a visual slider. The HTML report
 also includes final-score and score-vs-time charts that follow the same filters
 and table ordering. Clicking a model name toggles the search filter for that
-model. The table highlights best visible values in blue and worst visible
-values in red for final score, total time, token usage, max task tokens, and
-tokens/s.
+model. The browser remembers the current filters, column visibility, and sort
+for each generated HTML path, so reopening the report restores the same view.
+The table highlights best visible values in blue and worst visible values in
+red for final score, total time, token usage, max task tokens, and tokens/s.
 
 Use `--results-dir` to read runs from a different directory, or `--output` to
 write the Markdown report to a different file. The HTML file defaults to the
@@ -263,14 +275,21 @@ llm:
     - 0.6
 ```
 
-The sampling defaults below are sent for both direct LLM runs and OpenCode
-runs, and can be adjusted in the same `llm` section:
+Optional sampling parameters are sent for both direct LLM runs and OpenCode runs
+only when configured in the `llm` section:
 
 ```yaml
 llm:
   top_p: 0.95
+  min_p: 0.05
   top_k: 50
   repetition_penalty: 1.0
+```
+
+The same values can be supplied from the CLI:
+
+```bash
+python -m benchmark.cli run --config config.yaml --top-p 0.95 --min-p 0.05 --top-k 50 --repetition-penalty 1.0
 ```
 
 You can also set a single task in `config.yaml`:

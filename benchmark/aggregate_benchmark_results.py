@@ -1194,7 +1194,9 @@ def render_html(
     const tradeoffPlot = document.querySelector("#tradeoff-plot");
     const tradeoffLegend = document.querySelector("#tradeoff-legend");
     const tradeoffCount = document.querySelector("#tradeoff-count");
+    const storageKey = `csharp-llm-benchmark:filters:${{window.location.pathname}}`;
     let sortState = {{ key: "rank", direction: "asc", type: "number" }};
+    let isRestoringState = false;
     const extremeRules = [
       {{ key: "finalScore", best: "max" }},
       {{ key: "totalSeconds", best: "min" }},
@@ -1218,6 +1220,107 @@ def render_html(
 
     function visibleTableRows() {{
       return Array.from(tbody.querySelectorAll("tr")).filter((row) => !row.hidden);
+    }}
+
+    function browserStorage() {{
+      try {{
+        const storage = window.localStorage;
+        const testKey = `${{storageKey}}:test`;
+        storage.setItem(testKey, "1");
+        storage.removeItem(testKey);
+        return storage;
+      }} catch (_error) {{
+        return null;
+      }}
+    }}
+
+    function readStoredState() {{
+      const storage = browserStorage();
+      if (storage === null) {{
+        return null;
+      }}
+      try {{
+        const value = storage.getItem(storageKey);
+        return value ? JSON.parse(value) : null;
+      }} catch (_error) {{
+        return null;
+      }}
+    }}
+
+    function selectHasValue(select, value) {{
+      return Array.from(select.options).some((option) => option.value === value);
+    }}
+
+    function sortHeaderForKey(key) {{
+      return Array.from(table.querySelectorAll("th[data-key]"))
+        .find((header) => header.dataset.key === key) || null;
+    }}
+
+    function saveBrowserState() {{
+      if (isRestoringState) {{
+        return;
+      }}
+      const storage = browserStorage();
+      if (storage === null) {{
+        return;
+      }}
+      const state = {{
+        version: 1,
+        filters: {{
+          search: filters.search.value,
+          company: filters.company.value,
+          quantization: filters.quantization.value,
+          minScore: scoreRange.minInput.value,
+          maxScore: scoreRange.maxInput.value,
+        }},
+        columns: {{
+          token: columnToggles.token.checked,
+          score: columnToggles.score.checked,
+          temperature: columnToggles.temperature.checked,
+        }},
+        sort: sortState,
+      }};
+      try {{
+        storage.setItem(storageKey, JSON.stringify(state));
+      }} catch (_error) {{
+      }}
+    }}
+
+    function restoreBrowserState() {{
+      const state = readStoredState();
+      if (state === null || typeof state !== "object") {{
+        return;
+      }}
+
+      isRestoringState = true;
+      const storedFilters = state.filters || {{}};
+      filters.search.value = typeof storedFilters.search === "string" ? storedFilters.search : "";
+      filters.company.value = selectHasValue(filters.company, storedFilters.company) ? storedFilters.company : "";
+      filters.quantization.value = selectHasValue(filters.quantization, storedFilters.quantization) ? storedFilters.quantization : "";
+      setScoreRange(
+        clampScore(storedFilters.minScore, 0),
+        clampScore(storedFilters.maxScore, 100),
+      );
+      syncScoreRange("min", false);
+
+      const storedColumns = state.columns || {{}};
+      columnToggles.token.checked = storedColumns.token === true;
+      columnToggles.score.checked = storedColumns.score === true;
+      columnToggles.temperature.checked = storedColumns.temperature === true;
+
+      const storedSort = state.sort || {{}};
+      const sortHeader = sortHeaderForKey(storedSort.key);
+      if (
+        sortHeader !== null &&
+        (storedSort.direction === "asc" || storedSort.direction === "desc")
+      ) {{
+        sortState = {{
+          key: storedSort.key,
+          direction: storedSort.direction,
+          type: storedSort.type === "text" ? "text" : "number",
+        }};
+      }}
+      isRestoringState = false;
     }}
 
     function formatDurationLabel(totalSeconds) {{
@@ -1358,6 +1461,7 @@ def render_html(
       applyExtremes();
       renderScoreChart();
       renderTradeoffChart();
+      saveBrowserState();
     }}
 
     function applySort() {{
@@ -1374,6 +1478,7 @@ def render_html(
       applyExtremes();
       renderScoreChart();
       renderTradeoffChart();
+      saveBrowserState();
     }}
 
     function renderScoreChart() {{
@@ -1580,6 +1685,7 @@ def render_html(
       temperatureGroupHeading.dataset.expanded = showTemperatureColumns ? "true" : "false";
       selectedTemperatureHeading.hidden = !showTemperatureColumns;
       applyExtremes();
+      saveBrowserState();
     }}
 
     for (const input of Object.values(filters)) {{
@@ -1629,12 +1735,15 @@ def render_html(
       filters.company.value = "";
       filters.quantization.value = "";
       setScoreRange(0, 100);
+      saveBrowserState();
       applyFilters();
     }});
 
-    updateSortIndicators(table.querySelector('th[data-key="rank"]'));
     setScoreRange(0, 100);
+    restoreBrowserState();
     applyColumnVisibility();
+    applySort();
+    updateSortIndicators(sortHeaderForKey(sortState.key) || sortHeaderForKey("rank"));
     applyFilters();
   </script>
 </body>

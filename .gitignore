@@ -58,3 +58,10 @@ results/
 .DS_Store
 Thumbs.db
 /.cache
+AGENTS.md
+config-gpt.yaml
+hard-tasks-plan.md
+medium-tasks-plan.md
+plan.md
+PROJECT_CONTEXT.md
+todo.txt
