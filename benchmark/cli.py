@@ -295,6 +295,38 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--model-label")
     run.add_argument("--company")
     run.add_argument(
+        "--top-p",
+        type=float,
+        help=(
+            "Optional LLM top_p sampling parameter. Omit to let the provider "
+            "default apply."
+        ),
+    )
+    run.add_argument(
+        "--min-p",
+        type=float,
+        help=(
+            "Optional LLM min_p sampling parameter. Omit to let the provider "
+            "default apply."
+        ),
+    )
+    run.add_argument(
+        "--top-k",
+        type=int,
+        help=(
+            "Optional LLM top_k sampling parameter. Omit to let the provider "
+            "default apply."
+        ),
+    )
+    run.add_argument(
+        "--repetition-penalty",
+        type=float,
+        help=(
+            "Optional LLM repetition_penalty sampling parameter. Omit to let "
+            "the provider default apply."
+        ),
+    )
+    run.add_argument(
         "--generator",
         choices=("llm", "opencode"),
         help="Solution generator to use. Defaults to benchmark.generator.",
@@ -369,6 +401,10 @@ def _run(args: argparse.Namespace) -> int:
         generator=args.generator,
         opencode_version=args.opencode_version,
         opencode_timeout_seconds=args.opencode_timeout_seconds,
+        top_p=args.top_p,
+        min_p=args.min_p,
+        top_k=args.top_k,
+        repetition_penalty=args.repetition_penalty,
     )
     if args.resume is None and args.resume_dir is not None:
         raise ValueError("--resume-dir requires --resume")

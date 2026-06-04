@@ -9,9 +9,6 @@ from benchmark.simple_yaml import load_yaml
 
 
 DEFAULT_TEMPERATURES = (0.2, 0.40, 0.60)
-DEFAULT_TOP_P = 0.95
-DEFAULT_TOP_K = 50
-DEFAULT_REPETITION_PENALTY = 1.0
 
 
 @dataclass(frozen=True)
@@ -24,9 +21,10 @@ class LlmConfig:
     quantization: str = "unknown"
     temperature: float = DEFAULT_TEMPERATURES[0]
     temperatures: tuple[float, ...] = DEFAULT_TEMPERATURES
-    top_p: float = DEFAULT_TOP_P
-    top_k: int = DEFAULT_TOP_K
-    repetition_penalty: float = DEFAULT_REPETITION_PENALTY
+    top_p: float | None = None
+    min_p: float | None = None
+    top_k: int | None = None
+    repetition_penalty: float | None = None
     seed: int = 42
     timeout_seconds: int = 120
     requests_per_minute: int | None = None
@@ -123,16 +121,20 @@ def load_config(path: Path | None) -> AppConfig:
             ),
             temperature=temperatures[0],
             temperatures=temperatures,
-            top_p=_positive_float(
-                llm_data.get("top_p", LlmConfig.top_p),
+            top_p=_optional_positive_float(
+                llm_data.get("top_p"),
                 "llm.top_p",
             ),
-            top_k=_positive_int(llm_data.get("top_k", LlmConfig.top_k), "llm.top_k"),
-            repetition_penalty=_positive_float(
-                llm_data.get(
-                    "repetition_penalty",
-                    LlmConfig.repetition_penalty,
-                ),
+            min_p=_optional_positive_float(
+                llm_data.get("min_p"),
+                "llm.min_p",
+            ),
+            top_k=_optional_positive_int(
+                llm_data.get("top_k"),
+                "llm.top_k",
+            ),
+            repetition_penalty=_optional_positive_float(
+                llm_data.get("repetition_penalty"),
                 "llm.repetition_penalty",
             ),
             seed=int(llm_data.get("seed", LlmConfig.seed)),
@@ -263,6 +265,10 @@ def apply_cli_overrides(
     generator: str | None = None,
     opencode_version: str | None = None,
     opencode_timeout_seconds: int | None = None,
+    top_p: float | None = None,
+    min_p: float | None = None,
+    top_k: int | None = None,
+    repetition_penalty: float | None = None,
 ) -> AppConfig:
     updated = AppConfig(
         llm=LlmConfig(
@@ -282,9 +288,26 @@ def apply_cli_overrides(
             quantization=config.llm.quantization,
             temperature=config.llm.temperature,
             temperatures=config.llm.temperatures,
-            top_p=config.llm.top_p,
-            top_k=config.llm.top_k,
-            repetition_penalty=config.llm.repetition_penalty,
+            top_p=(
+                _positive_float(top_p, "llm.top_p")
+                if top_p is not None
+                else config.llm.top_p
+            ),
+            min_p=(
+                _positive_float(min_p, "llm.min_p")
+                if min_p is not None
+                else config.llm.min_p
+            ),
+            top_k=(
+                _positive_int(top_k, "llm.top_k")
+                if top_k is not None
+                else config.llm.top_k
+            ),
+            repetition_penalty=(
+                _positive_float(repetition_penalty, "llm.repetition_penalty")
+                if repetition_penalty is not None
+                else config.llm.repetition_penalty
+            ),
             seed=config.llm.seed,
             timeout_seconds=config.llm.timeout_seconds,
             requests_per_minute=config.llm.requests_per_minute,
@@ -406,6 +429,12 @@ def _optional_positive_int(value: Any, name: str) -> int | None:
     if number < 0:
         raise ValueError(f"{name} must be at least 1 when set")
     return number
+
+
+def _optional_positive_float(value: Any, name: str) -> float | None:
+    if value is None:
+        return None
+    return _positive_float(value, name)
 
 
 def _bool_value(value: Any, name: str) -> bool:

@@ -71,15 +71,20 @@ class LlmClient:
         payload: dict[str, Any] = {
             "model": self.config.model,
             "temperature": self.config.temperature,
-            "top_p": self.config.top_p,
-            "top_k": self.config.top_k,
-            "repetition_penalty": self.config.repetition_penalty,
             "seed": self.config.seed,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
         }
+        if self.config.top_p is not None:
+            payload["top_p"] = self.config.top_p
+        if self.config.min_p is not None:
+            payload["min_p"] = self.config.min_p
+        if self.config.top_k is not None:
+            payload["top_k"] = self.config.top_k
+        if self.config.repetition_penalty is not None:
+            payload["repetition_penalty"] = self.config.repetition_penalty
         body = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             f"{self.config.base_url}/chat/completions",

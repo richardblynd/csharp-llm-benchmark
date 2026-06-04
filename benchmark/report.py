@@ -68,6 +68,7 @@ def write_summary(
             "temperature": config.llm.temperature,
             "temperatures": list(config.llm.temperatures),
             "top_p": config.llm.top_p,
+            "min_p": config.llm.min_p,
             "top_k": config.llm.top_k,
             "repetition_penalty": config.llm.repetition_penalty,
             "seed": config.llm.seed,
@@ -211,9 +212,10 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         f"- Quantization: `{payload['quantization']}`",
         f"- Selected temperature: `{_format_temperature(payload['selected_temperature'])}`",
         f"- Configured temperatures: `{_format_temperature_list(payload['llm'].get('temperatures', []))}`",
-        f"- Top P: `{payload['llm'].get('top_p')}`",
-        f"- Top K: `{payload['llm'].get('top_k')}`",
-        f"- Repetition penalty: `{payload['llm'].get('repetition_penalty')}`",
+        f"- Top P: `{_format_optional_number(payload['llm'].get('top_p'))}`",
+        f"- Min P: `{_format_optional_number(payload['llm'].get('min_p'))}`",
+        f"- Top K: `{_format_optional_number(payload['llm'].get('top_k'))}`",
+        f"- Repetition penalty: `{_format_optional_number(payload['llm'].get('repetition_penalty'))}`",
         f"- Final score: `{payload['score']['final_score']}`",
         f"- Points: `{payload['score']['earned_points']} / {payload['score']['available_points']}`",
         f"- Total LLM response time: `{format_duration_hms(payload['llm_response_time']['total_seconds'])}`",
@@ -325,6 +327,12 @@ def _format_tokens(tokens: int | None) -> str:
     if tokens is None:
         return "unavailable"
     return str(tokens)
+
+
+def _format_optional_number(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:g}" if isinstance(value, (float, int)) else str(value)
 
 
 def _format_temperature(temperature: Any) -> str:

@@ -319,14 +319,20 @@ class OpenCodeGenerator:
         return config
 
     def _model_config(self, model: str) -> dict[str, Any]:
+        options: dict[str, int | float] = {
+            "temperature": self._llm.temperature,
+        }
+        if self._llm.top_p is not None:
+            options["top_p"] = self._llm.top_p
+        if self._llm.min_p is not None:
+            options["min_p"] = self._llm.min_p
+        if self._llm.top_k is not None:
+            options["top_k"] = self._llm.top_k
+        if self._llm.repetition_penalty is not None:
+            options["repetition_penalty"] = self._llm.repetition_penalty
         config: dict[str, Any] = {
             "name": model,
-            "options": {
-                "temperature": self._llm.temperature,
-                "top_p": self._llm.top_p,
-                "top_k": self._llm.top_k,
-                "repetition_penalty": self._llm.repetition_penalty,
-            },
+            "options": options,
         }
         limit: dict[str, int] = {}
         if self._opencode.context_limit is not None:
