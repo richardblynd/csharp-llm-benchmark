@@ -397,6 +397,9 @@ def render_html(
         for index, label in enumerate(collect_temperature_labels(benchmark_results))
     ]
     temperature_header_cells = render_temperature_header_cells(temperature_columns)
+    generators = sorted(
+        {result.generator for result in benchmark_results if result.generator}
+    )
     companies = sorted(
         {result.company for result in benchmark_results if result.company}
     )
@@ -490,7 +493,7 @@ def render_html(
 
     .filters {{
       display: grid;
-      grid-template-columns: minmax(240px, 1fr) repeat(3, minmax(150px, 220px));
+      grid-template-columns: minmax(240px, 1fr) repeat(4, minmax(150px, 220px));
       gap: 12px;
       align-items: end;
       margin-bottom: 16px;
@@ -1056,6 +1059,13 @@ def render_html(
         <input id="search" type="search" placeholder="Generator, model, company, quantization, task...">
       </label>
       <label>
+        Generator
+        <select id="generator">
+          <option value="">All generators</option>
+          {render_options(generators)}
+        </select>
+      </label>
+      <label>
         Company
         <select id="company">
           <option value="">All companies</option>
@@ -1164,6 +1174,7 @@ def render_html(
     const rows = Array.from(tbody.querySelectorAll("tr"));
     const filters = {{
       search: document.querySelector("#search"),
+      generator: document.querySelector("#generator"),
       company: document.querySelector("#company"),
       quantization: document.querySelector("#quantization"),
     }};
@@ -1268,6 +1279,7 @@ def render_html(
         version: 1,
         filters: {{
           search: filters.search.value,
+          generator: filters.generator.value,
           company: filters.company.value,
           quantization: filters.quantization.value,
           minScore: scoreRange.minInput.value,
@@ -1295,6 +1307,7 @@ def render_html(
       isRestoringState = true;
       const storedFilters = state.filters || {{}};
       filters.search.value = typeof storedFilters.search === "string" ? storedFilters.search : "";
+      filters.generator.value = selectHasValue(filters.generator, storedFilters.generator) ? storedFilters.generator : "";
       filters.company.value = selectHasValue(filters.company, storedFilters.company) ? storedFilters.company : "";
       filters.quantization.value = selectHasValue(filters.quantization, storedFilters.quantization) ? storedFilters.quantization : "";
       setScoreRange(
@@ -1374,12 +1387,16 @@ def render_html(
 
     function rowMatches(row) {{
       const query = normalize(filters.search.value);
+      const generator = filters.generator.value;
       const company = filters.company.value;
       const quantization = filters.quantization.value;
       const minScore = clampScore(scoreRange.minInput.value, 0);
       const maxScore = clampScore(scoreRange.maxInput.value, 100);
 
       if (query && !normalize(row.dataset.search).includes(query)) {{
+        return false;
+      }}
+      if (generator && row.dataset.generator !== generator) {{
         return false;
       }}
       if (company && row.dataset.company !== company) {{
@@ -1732,6 +1749,7 @@ def render_html(
 
     reset.addEventListener("click", () => {{
       filters.search.value = "";
+      filters.generator.value = "";
       filters.company.value = "";
       filters.quantization.value = "";
       setScoreRange(0, 100);
