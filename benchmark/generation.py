@@ -5,11 +5,12 @@ import os
 import shlex
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 from benchmark.config import AppConfig, OpenCodeConfig
@@ -36,6 +37,26 @@ class OpenCodeRunMetadata:
     exit_code: int
     timed_out: bool = False
     container_name: str | None = None
+
+
+@dataclass(frozen=True)
+class OpenCodePreflight:
+    version_configured: str
+    version_resolved: str | None
+    package: str
+    install_time_seconds: float
+    install_output: str
+
+
+@dataclass(frozen=True)
+class PreparedOpenCodeGeneration:
+    task: Task
+    task_dir: Path
+    workspace: Path
+    preflight: OpenCodePreflight
+    container_name: str
+    docker_command: list[str]
+    precreated: bool = False
 
 
 @dataclass(frozen=True)
@@ -113,6 +134,9 @@ class DirectLlmGenerator:
 
 
 class OpenCodeGenerator:
+    _preflight_lock: ClassVar[threading.Lock] = threading.Lock()
+    _preflight_cache: ClassVar[dict[tuple[str, ...], OpenCodePreflight]] = {}
+
     def __init__(self, config: AppConfig):
         if config.opencode.version is None:
             raise ValueError("opencode.version is required for the opencode generator")
@@ -121,104 +145,186 @@ class OpenCodeGenerator:
         self._rate_limiter = RequestRateLimiter(config.llm.requests_per_minute)
 
     def generate(self, task: Task, task_dir: Path) -> GeneratedSolution:
+        return self.run_prepared(self.prepare(task, task_dir))
+
+    def preflight(self) -> OpenCodePreflight:
+        cache_key = self._preflight_cache_key()
+        with self._preflight_lock:
+            cached = self._preflight_cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+            install_started_at = time.perf_counter()
+            install = self._ensure_opencode_installed()
+            install_time_seconds = time.perf_counter() - install_started_at
+            version_resolved = _last_non_empty_line(install.stdout)
+            if install.exit_code != 0:
+                raise RuntimeError(
+                    "OpenCode installation failed: " + install.combined_output
+                )
+
+            preflight = OpenCodePreflight(
+                version_configured=self._opencode.version,
+                version_resolved=version_resolved,
+                package=self._opencode.package,
+                install_time_seconds=install_time_seconds,
+                install_output=install.combined_output,
+            )
+            self._preflight_cache[cache_key] = preflight
+            return preflight
+
+    def prepare(self, task: Task, task_dir: Path) -> PreparedOpenCodeGeneration:
+        preflight = self.preflight()
         prompt = self._build_agent_prompt(task)
         (task_dir / "prompt.md").write_text(task.prompt, encoding="utf-8")
         (task_dir / "opencode-prompt.md").write_text(prompt, encoding="utf-8")
-
-        install_started_at = time.perf_counter()
-        install = self._ensure_opencode_installed(task_dir)
-        install_time_seconds = time.perf_counter() - install_started_at
         (task_dir / "opencode-install.log").write_text(
-            install.combined_output + "\n",
+            preflight.install_output + "\n",
             encoding="utf-8",
         )
-        version_resolved = _last_non_empty_line(install.stdout)
-        if install.exit_code != 0:
-            raise RuntimeError(
-                "OpenCode installation failed: " + install.combined_output
-            )
 
         workspace = self._prepare_workspace(task, task_dir, prompt)
         self._write_opencode_config(workspace)
+        home_dir = task_dir / "opencode-home"
+        home_dir.mkdir(parents=True, exist_ok=True)
+        container_name = _container_name("task", task.id, include_prefix=False)
+        docker_command = self._opencode_docker_command(
+            task,
+            workspace,
+            home_dir,
+            container_name=container_name,
+            create=self._opencode.precreate_container,
+        )
+        if self._opencode.precreate_container:
+            create = self._run_docker(
+                docker_command,
+                timeout=30,
+                env={"OPENCODE_BENCHMARK_API_KEY": self._llm.api_key},
+            )
+            if create.exit_code != 0:
+                self._remove_container(container_name)
+                raise RuntimeError(
+                    "OpenCode container preparation failed: "
+                    + create.combined_output
+                )
+        return PreparedOpenCodeGeneration(
+            task=task,
+            task_dir=task_dir,
+            workspace=workspace,
+            preflight=preflight,
+            container_name=container_name,
+            docker_command=docker_command,
+            precreated=self._opencode.precreate_container,
+        )
+
+    def run_prepared(
+        self,
+        prepared: PreparedOpenCodeGeneration,
+    ) -> GeneratedSolution:
         self._rate_limiter.wait()
         session_started_at = time.perf_counter()
-        run = self._run_opencode(task, task_dir, workspace)
+        if prepared.precreated:
+            run = self._start_precreated_opencode(prepared)
+        else:
+            run = self._run_docker(
+                prepared.docker_command,
+                timeout=self._opencode.timeout_seconds,
+                env={"OPENCODE_BENCHMARK_API_KEY": self._llm.api_key},
+                keep_on_timeout=self._opencode.keep_timed_out_containers,
+            )
         session_time_seconds = time.perf_counter() - session_started_at
-        (task_dir / "response.md").write_text(run.stdout, encoding="utf-8")
-        (task_dir / "opencode-events.jsonl").write_text(run.stdout, encoding="utf-8")
-        (task_dir / "opencode-stderr.log").write_text(run.stderr, encoding="utf-8")
-
-        generated_path = workspace / task.generated_file
-        metadata = OpenCodeRunMetadata(
-            version_configured=self._opencode.version,
-            version_resolved=version_resolved,
-            package=self._opencode.package,
-            install_time_seconds=install_time_seconds,
-            session_time_seconds=session_time_seconds,
-            exit_code=run.exit_code,
-            timed_out=run.timed_out,
-            container_name=run.container_name,
-        )
-        usage = _parse_opencode_usage(run.stdout)
-        opencode_error = _parse_opencode_error(run.stdout)
-        if opencode_error is not None:
-            return GeneratedSolution(
-                extracted=ExtractedCode(
-                    code=None,
-                    warnings=(),
-                    error=f"OpenCode reported an error: {opencode_error}",
-                ),
-                llm_response_time_seconds=session_time_seconds,
-                llm_usage=usage,
-                generator="opencode",
-                opencode_metadata=metadata,
+        try:
+            task = prepared.task
+            task_dir = prepared.task_dir
+            workspace = prepared.workspace
+            (task_dir / "response.md").write_text(run.stdout, encoding="utf-8")
+            (task_dir / "opencode-events.jsonl").write_text(
+                run.stdout,
+                encoding="utf-8",
+            )
+            (task_dir / "opencode-stderr.log").write_text(
+                run.stderr,
+                encoding="utf-8",
             )
 
-        if not generated_path.exists():
-            return GeneratedSolution(
-                extracted=ExtractedCode(
-                    code=None,
-                    warnings=(),
-                    error=(
-                        "OpenCode did not create the expected generated file "
-                        f"{task.generated_file}."
+            generated_path = workspace / task.generated_file
+            metadata = OpenCodeRunMetadata(
+                version_configured=prepared.preflight.version_configured,
+                version_resolved=prepared.preflight.version_resolved,
+                package=prepared.preflight.package,
+                install_time_seconds=prepared.preflight.install_time_seconds,
+                session_time_seconds=session_time_seconds,
+                exit_code=run.exit_code,
+                timed_out=run.timed_out,
+                container_name=run.container_name,
+            )
+            usage = _parse_opencode_usage(run.stdout)
+            opencode_error = _parse_opencode_error(run.stdout)
+            if opencode_error is not None:
+                return GeneratedSolution(
+                    extracted=ExtractedCode(
+                        code=None,
+                        warnings=(),
+                        error=f"OpenCode reported an error: {opencode_error}",
                     ),
-                ),
+                    llm_response_time_seconds=session_time_seconds,
+                    llm_usage=usage,
+                    generator="opencode",
+                    opencode_metadata=metadata,
+                )
+
+            if not generated_path.exists():
+                return GeneratedSolution(
+                    extracted=ExtractedCode(
+                        code=None,
+                        warnings=(),
+                        error=(
+                            "OpenCode did not create the expected generated file "
+                            f"{task.generated_file}."
+                        ),
+                    ),
+                    llm_response_time_seconds=session_time_seconds,
+                    llm_usage=usage,
+                    generator="opencode",
+                    opencode_metadata=metadata,
+                )
+
+            code = generated_path.read_text(encoding="utf-8")
+            required_public_class = (
+                task.solution_class if task.difficulty == "easy" else None
+            )
+            extracted = extract_solution_code(
+                code,
+                required_public_class=required_public_class,
+                preserve_unfenced_code=True,
+            )
+            warnings = list(extracted.warnings)
+            if run.exit_code != 0:
+                warnings.append(f"OpenCode exited with code {run.exit_code}.")
+            extracted = ExtractedCode(
+                code=extracted.code,
+                warnings=tuple(warnings),
+                error=extracted.error,
+            )
+            if extracted.code is not None:
+                result_generated_path = task_dir / task.generated_file
+                result_generated_path.parent.mkdir(parents=True, exist_ok=True)
+                result_generated_path.write_text(extracted.code, encoding="utf-8")
+
+            return GeneratedSolution(
+                extracted=extracted,
                 llm_response_time_seconds=session_time_seconds,
                 llm_usage=usage,
                 generator="opencode",
                 opencode_metadata=metadata,
             )
+        finally:
+            preserve_timeout_home = (
+                run.timed_out and self._opencode.keep_timed_out_containers
+            )
+            self._cleanup_opencode_home(prepared, preserve=preserve_timeout_home)
 
-        code = generated_path.read_text(encoding="utf-8")
-        required_public_class = task.solution_class if task.difficulty == "easy" else None
-        extracted = extract_solution_code(
-            code,
-            required_public_class=required_public_class,
-            preserve_unfenced_code=True,
-        )
-        warnings = list(extracted.warnings)
-        if run.exit_code != 0:
-            warnings.append(f"OpenCode exited with code {run.exit_code}.")
-        extracted = ExtractedCode(
-            code=extracted.code,
-            warnings=tuple(warnings),
-            error=extracted.error,
-        )
-        if extracted.code is not None:
-            result_generated_path = task_dir / task.generated_file
-            result_generated_path.parent.mkdir(parents=True, exist_ok=True)
-            result_generated_path.write_text(extracted.code, encoding="utf-8")
-
-        return GeneratedSolution(
-            extracted=extracted,
-            llm_response_time_seconds=session_time_seconds,
-            llm_usage=usage,
-            generator="opencode",
-            opencode_metadata=metadata,
-        )
-
-    def _ensure_opencode_installed(self, task_dir: Path) -> CommandResult:
+    def _ensure_opencode_installed(self) -> CommandResult:
         install_dir = self._opencode_install_dir()
         install_dir.mkdir(parents=True, exist_ok=True)
         package_spec = f"{self._opencode.package}@{self._opencode.version}"
@@ -239,11 +345,11 @@ class OpenCodeGenerator:
         )
         return self._run_docker(
             [
-            "docker",
-            "run",
-            "--rm",
-            "--name",
-            _container_name("install", self._opencode.version or "unknown"),
+                "docker",
+                "run",
+                "--rm",
+                "--name",
+                _container_name("install", self._opencode.version or "unknown"),
                 "--network",
                 self._opencode.network,
                 "--user",
@@ -258,6 +364,23 @@ class OpenCodeGenerator:
             timeout=self._opencode.timeout_seconds,
             keep_on_timeout=False,
         )
+
+    def cleanup_prepared(self, prepared: PreparedOpenCodeGeneration) -> None:
+        if prepared.precreated:
+            self._remove_container(prepared.container_name)
+        self._cleanup_opencode_home(prepared)
+
+    def _cleanup_opencode_home(
+        self,
+        prepared: PreparedOpenCodeGeneration,
+        *,
+        preserve: bool = False,
+    ) -> None:
+        if preserve:
+            return
+        home_dir = prepared.task_dir / "opencode-home"
+        if home_dir.exists():
+            shutil.rmtree(home_dir, ignore_errors=True)
 
     def _build_agent_prompt(self, task: Task) -> str:
         return _agent_prompt(task, self._opencode)
@@ -349,9 +472,33 @@ class OpenCodeGenerator:
         task_dir: Path,
         workspace: Path,
     ) -> CommandResult:
-        install_dir = self._opencode_install_dir()
         home_dir = task_dir / "opencode-home"
         home_dir.mkdir(parents=True, exist_ok=True)
+        container_name = _container_name("task", task.id, include_prefix=False)
+        docker_command = self._opencode_docker_command(
+            task,
+            workspace,
+            home_dir,
+            container_name=container_name,
+            create=False,
+        )
+        return self._run_docker(
+            docker_command,
+            timeout=self._opencode.timeout_seconds,
+            env={"OPENCODE_BENCHMARK_API_KEY": self._llm.api_key},
+            keep_on_timeout=self._opencode.keep_timed_out_containers,
+        )
+
+    def _opencode_docker_command(
+        self,
+        task: Task,
+        workspace: Path,
+        home_dir: Path,
+        *,
+        container_name: str,
+        create: bool,
+    ) -> list[str]:
+        install_dir = self._opencode_install_dir()
         env = [
             "--env",
             "OPENCODE_BENCHMARK_API_KEY",
@@ -390,39 +537,90 @@ class OpenCodeGenerator:
         )
         docker_command = [
             "docker",
-            "run",
-            "--rm",
-            "--name",
-            _container_name("task", task.id, include_prefix=False),
-            "--network",
-            self._opencode.network,
-            "--user",
-            "root",
-            "--add-host",
-            "host.docker.internal:host-gateway",
-            "--mount",
-            f"type=bind,source={install_dir.resolve()},target=/opencode-install",
-            "--mount",
-            f"type=bind,source={workspace.resolve()},target=/workspace",
-            "--mount",
-            f"type=bind,source={home_dir.resolve()},target=/home/benchmark",
-            *env,
-            self._opencode.docker_image,
-            "/bin/sh",
-            "-lc",
-            script,
+            "create" if create else "run",
         ]
-        return self._run_docker(
-            docker_command,
-            timeout=self._opencode.timeout_seconds,
-            env={"OPENCODE_BENCHMARK_API_KEY": self._llm.api_key},
-            keep_on_timeout=self._opencode.keep_timed_out_containers,
+        if not create:
+            docker_command.append("--rm")
+        docker_command.extend(
+            [
+                "--name",
+                container_name,
+                "--network",
+                self._opencode.network,
+                "--user",
+                "root",
+                "--add-host",
+                "host.docker.internal:host-gateway",
+                "--mount",
+                f"type=bind,source={install_dir.resolve()},target=/opencode-install",
+                "--mount",
+                f"type=bind,source={workspace.resolve()},target=/workspace",
+                "--mount",
+                f"type=bind,source={home_dir.resolve()},target=/home/benchmark",
+                *env,
+                self._opencode.docker_image,
+                "/bin/sh",
+                "-lc",
+                script,
+            ]
+        )
+        return docker_command
+
+    def _start_precreated_opencode(
+        self,
+        prepared: PreparedOpenCodeGeneration,
+    ) -> CommandResult:
+        timed_out = False
+        try:
+            run = self._run_docker(
+                ["docker", "start", "--attach", prepared.container_name],
+                timeout=self._opencode.timeout_seconds,
+                env={"OPENCODE_BENCHMARK_API_KEY": self._llm.api_key},
+                keep_on_timeout=self._opencode.keep_timed_out_containers,
+            )
+            timed_out = run.timed_out
+            if run.timed_out and self._opencode.keep_timed_out_containers:
+                return CommandResult(
+                    exit_code=run.exit_code,
+                    stdout=run.stdout,
+                    stderr=run.stderr,
+                    timed_out=run.timed_out,
+                    container_name=prepared.container_name,
+                )
+            return CommandResult(
+                exit_code=run.exit_code,
+                stdout=run.stdout,
+                stderr=run.stderr,
+                timed_out=run.timed_out,
+                container_name=prepared.container_name,
+            )
+        finally:
+            if not (timed_out and self._opencode.keep_timed_out_containers):
+                self._remove_container(prepared.container_name)
+
+    def _remove_container(self, container_name: str) -> None:
+        subprocess.run(
+            ["docker", "rm", "-f", container_name],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
 
     def _opencode_install_dir(self) -> Path:
         package_key = _safe_cache_key(self._opencode.package)
         version_key = _safe_cache_key(self._opencode.version or "unknown")
         return self._opencode.cache_dir / package_key / version_key
+
+    def _preflight_cache_key(self) -> tuple[str, ...]:
+        return (
+            self._opencode.package,
+            self._opencode.version or "",
+            str(self._opencode.cache_dir.resolve()),
+            self._opencode.docker_image,
+            self._opencode.network,
+            str(self._opencode.timeout_seconds),
+        )
 
     def _container_base_url(self) -> str:
         if self._opencode.container_base_url:

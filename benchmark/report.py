@@ -85,6 +85,8 @@ def write_summary(
                 "keep_timed_out_containers": (
                     config.opencode.keep_timed_out_containers
                 ),
+                "prepare_ahead": config.opencode.prepare_ahead,
+                "precreate_container": config.opencode.precreate_container,
                 "max_steps": config.opencode.max_steps,
                 "network": config.opencode.network,
                 "container_base_url": config.opencode.container_base_url,

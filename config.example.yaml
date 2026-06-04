@@ -43,6 +43,12 @@ opencode:
   cache_dir: ".cache/opencode"
   timeout_seconds: 900
   keep_timed_out_containers: false
+  # Prepares the next task workspace/config while the current OpenCode session
+  # is running. The LLM session itself remains serial.
+  prepare_ahead: true
+  # More aggressive: docker-create the next task container during preparation,
+  # but only docker-start it after the current OpenCode session finishes.
+  precreate_container: false
   max_steps: 40
   network: "bridge"
   # Optional model limits passed to OpenCode so it can track remaining context

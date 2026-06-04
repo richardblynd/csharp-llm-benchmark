@@ -64,6 +64,8 @@ class OpenCodeConfig:
     cache_dir: Path = Path(".cache/opencode")
     timeout_seconds: int = 900
     keep_timed_out_containers: bool = False
+    prepare_ahead: bool = True
+    precreate_container: bool = False
     max_steps: int = 40
     network: str = "bridge"
     container_base_url: str | None = None
@@ -206,6 +208,20 @@ def load_config(path: Path | None) -> AppConfig:
                     OpenCodeConfig.keep_timed_out_containers,
                 ),
                 "opencode.keep_timed_out_containers",
+            ),
+            prepare_ahead=_bool_value(
+                opencode_data.get(
+                    "prepare_ahead",
+                    OpenCodeConfig.prepare_ahead,
+                ),
+                "opencode.prepare_ahead",
+            ),
+            precreate_container=_bool_value(
+                opencode_data.get(
+                    "precreate_container",
+                    OpenCodeConfig.precreate_container,
+                ),
+                "opencode.precreate_container",
             ),
             max_steps=_positive_int(
                 opencode_data.get("max_steps", OpenCodeConfig.max_steps),
@@ -351,6 +367,8 @@ def apply_cli_overrides(
                 else config.opencode.timeout_seconds
             ),
             keep_timed_out_containers=config.opencode.keep_timed_out_containers,
+            prepare_ahead=config.opencode.prepare_ahead,
+            precreate_container=config.opencode.precreate_container,
             max_steps=config.opencode.max_steps,
             network=config.opencode.network,
             container_base_url=config.opencode.container_base_url,

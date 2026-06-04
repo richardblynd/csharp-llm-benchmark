@@ -12,6 +12,8 @@ from pathlib import Path
 from benchmark.config import apply_cli_overrides, load_config, with_llm_temperature
 from benchmark.generation import (
     GeneratedSolution,
+    OpenCodeGenerator,
+    PreparedOpenCodeGeneration,
     SolutionGenerator,
     create_solution_generator,
     opencode_metadata_to_dict,
@@ -51,6 +53,13 @@ class PendingGeneration:
     temperature: float
     task: Task
     task_dir: Path
+
+
+@dataclass(frozen=True)
+class ReadyGeneration:
+    pending: PendingGeneration
+    generator: OpenCodeGenerator
+    prepared: PreparedOpenCodeGeneration
 
 
 @dataclass(frozen=True)
@@ -564,6 +573,15 @@ def _run_task_major_temperatures(
         )
     if config.benchmark.generator == "opencode":
         header_lines.append(f"OpenCode version: {config.opencode.version}")
+        header_lines.append(
+            "OpenCode prepare ahead: "
+            + ("enabled" if config.opencode.prepare_ahead else "disabled")
+        )
+        if config.opencode.prepare_ahead:
+            header_lines.append(
+                "OpenCode precreate container: "
+                + ("enabled" if config.opencode.precreate_container else "disabled")
+            )
     if config.llm.requests_per_minute is not None:
         header_lines.append(
             f"LLM rate limit: {config.llm.requests_per_minute} requests/minute"
@@ -579,6 +597,66 @@ def _run_task_major_temperatures(
         dashboard_rows,
         header_lines=header_lines,
     )
+    if _can_prepare_opencode_ahead(config, solution_generators):
+        _run_prepared_opencode_queue(
+            config,
+            runner,
+            solution_generators,
+            queued_generations,
+            dashboard,
+            dashboard_rows,
+            task_scores_by_temperature,
+        )
+    else:
+        _run_generation_queue(
+            config,
+            runner,
+            solution_generators,
+            queued_generations,
+            dashboard,
+            dashboard_rows,
+            task_scores_by_temperature,
+        )
+
+    return [
+        TemperatureRun(
+            temperature=temperature,
+            score=score_benchmark(completed_task_scores),
+            task_scores=completed_task_scores,
+        )
+        for temperature, completed_task_scores in zip(
+            temperatures,
+            (
+                _completed_task_scores(task_scores)
+                for task_scores in task_scores_by_temperature
+            ),
+        )
+    ]
+
+
+def _can_prepare_opencode_ahead(
+    config,
+    solution_generators: list[SolutionGenerator],
+) -> bool:
+    return (
+        config.benchmark.generator == "opencode"
+        and config.opencode.prepare_ahead
+        and all(
+            isinstance(generator, OpenCodeGenerator)
+            for generator in solution_generators
+        )
+    )
+
+
+def _run_generation_queue(
+    config,
+    runner: DockerRunner,
+    solution_generators: list[SolutionGenerator],
+    queued_generations: list[PendingGeneration],
+    dashboard: DashboardRenderer,
+    dashboard_rows: list[DashboardRow],
+    task_scores_by_temperature: list[list[TaskScore | None]],
+) -> None:
     next_generation_index = 0
     pending_generation: Future[GeneratedSolution] | None = None
     current_generation: PendingGeneration | None = None
@@ -638,35 +716,14 @@ def _run_task_major_temperatures(
                         f"LLM generation failed for task "
                         f"{current_generation.task.id}: {exc}"
                     ) from exc
-                row = dashboard_rows[current_generation.row_index]
-                row.llm = f"{generated.llm_response_time_seconds:.2f}s"
-                row.tokens = _format_tokens(generated.llm_usage.total_tokens)
-                row.evaluation = TESTS_RUNNING_STATUS
-                evaluation_future = evaluation_executor.submit(
-                    runner.evaluate,
-                    current_generation.task,
-                    generated.extracted,
-                    artifact_dir=current_generation.task_dir,
-                    llm_response_time_seconds=generated.llm_response_time_seconds,
-                    llm_usage=generated.llm_usage,
-                    generator=generated.generator,
-                    opencode_metadata=opencode_metadata_to_dict(
-                        generated.opencode_metadata
-                    ),
-                    temperature=current_generation.temperature,
-                )
-                pending[evaluation_future] = PendingEvaluation(
-                    row_index=current_generation.row_index,
-                    task_index=current_generation.task_index,
-                    temperature_index=current_generation.temperature_index,
-                    temperature=current_generation.temperature,
-                    task=current_generation.task,
-                    task_dir=current_generation.task_dir,
-                )
-                _refresh_evaluation_statuses(
+                _queue_evaluation(
+                    config,
+                    runner,
+                    evaluation_executor,
                     pending,
                     dashboard_rows,
-                    config.benchmark.evaluation_workers,
+                    current_generation,
+                    generated,
                 )
                 pending_generation = None
                 current_generation = None
@@ -687,64 +744,220 @@ def _run_task_major_temperatures(
                     next_generation_index += 1
                 dashboard.render()
 
-            for completed_future in completed_futures:
-                if completed_future not in pending:
-                    continue
-                pending_evaluation = pending.pop(completed_future)
+            _complete_evaluations(
+                config,
+                runner,
+                pending,
+                completed_futures,
+                pending_generation,
+                dashboard,
+                dashboard_rows,
+                task_scores_by_temperature,
+            )
+
+
+def _run_prepared_opencode_queue(
+    config,
+    runner: DockerRunner,
+    solution_generators: list[SolutionGenerator],
+    queued_generations: list[PendingGeneration],
+    dashboard: DashboardRenderer,
+    dashboard_rows: list[DashboardRow],
+    task_scores_by_temperature: list[list[TaskScore | None]],
+) -> None:
+    if not queued_generations:
+        dashboard.render()
+        return
+
+    for generator in solution_generators:
+        if not isinstance(generator, OpenCodeGenerator):
+            continue
+        generator.preflight()
+
+    next_prepare_index = 0
+    pending_prepare: Future[PreparedOpenCodeGeneration] | None = None
+    current_prepare: PendingGeneration | None = None
+    ready_generation: ReadyGeneration | None = None
+    pending_generation: Future[GeneratedSolution] | None = None
+    current_generation: ReadyGeneration | None = None
+    pending: dict[Future[TaskRunResult], PendingEvaluation] = {}
+
+    def queue_prepare(
+        prepare_executor: ThreadPoolExecutor,
+    ) -> None:
+        nonlocal next_prepare_index
+        nonlocal pending_prepare
+        nonlocal current_prepare
+        if pending_prepare is not None or ready_generation is not None:
+            return
+        if next_prepare_index >= len(queued_generations):
+            return
+        pending = queued_generations[next_prepare_index]
+        generator = solution_generators[pending.temperature_index]
+        if not isinstance(generator, OpenCodeGenerator):
+            raise RuntimeError("OpenCode prepare ahead requires OpenCode generators.")
+        pending_prepare, current_prepare = _queue_opencode_prepare(
+            prepare_executor,
+            generator,
+            pending,
+        )
+        dashboard_rows[pending.row_index].llm = "preparing"
+        next_prepare_index += 1
+
+    def start_ready_generation(
+        generation_executor: ThreadPoolExecutor,
+        prepare_executor: ThreadPoolExecutor,
+    ) -> None:
+        nonlocal ready_generation
+        nonlocal pending_generation
+        nonlocal current_generation
+        if pending_generation is not None or ready_generation is None:
+            return
+        pending_generation = generation_executor.submit(
+            _run_prepared_opencode_solution,
+            ready_generation.generator,
+            ready_generation.prepared,
+        )
+        current_generation = ready_generation
+        dashboard_rows[ready_generation.pending.row_index].llm = LLM_RUNNING_STATUS
+        ready_generation = None
+        queue_prepare(prepare_executor)
+
+    with ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix="benchmark-opencode-prepare",
+    ) as prepare_executor, ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix="benchmark-llm",
+    ) as generation_executor, ThreadPoolExecutor(
+        max_workers=config.benchmark.evaluation_workers,
+        thread_name_prefix="benchmark-eval",
+    ) as evaluation_executor:
+        queue_prepare(prepare_executor)
+        dashboard.render()
+
+        while (
+            pending_prepare is not None
+            or ready_generation is not None
+            or pending_generation is not None
+            or pending
+        ):
+            start_ready_generation(generation_executor, prepare_executor)
+            active_futures: set[Future] = set(pending)
+            if pending_prepare is not None:
+                active_futures.add(pending_prepare)
+            if pending_generation is not None:
+                active_futures.add(pending_generation)
+            if not active_futures:
+                continue
+
+            completed_futures, _ = wait(
+                active_futures,
+                return_when=FIRST_COMPLETED,
+            )
+
+            if (
+                pending_prepare is not None
+                and pending_prepare in completed_futures
+                and current_prepare is not None
+            ):
                 try:
-                    result = completed_future.result()
+                    prepared = pending_prepare.result()
                 except Exception as exc:
-                    dashboard_rows[pending_evaluation.row_index].evaluation = "error"
-                    _cancel_pending_work(
+                    dashboard_rows[current_prepare.row_index].llm = "error"
+                    dashboard_rows[current_prepare.row_index].evaluation = "cancelled"
+                    _cancel_prepared_opencode_work(
                         runner,
+                        solution_generators,
                         pending_generation,
+                        pending_prepare,
+                        current_prepare,
                         pending,
+                        ready_generation,
                         dashboard_rows,
                     )
                     dashboard.render()
                     raise RuntimeError(
-                        f"Evaluation failed for task "
-                        f"{pending_evaluation.task.id}: {exc}"
+                        f"OpenCode preparation failed for task "
+                        f"{current_prepare.task.id}: {exc}"
                     ) from exc
-                write_result_json(
-                    pending_evaluation.task_dir / "result.json",
-                    result,
-                    model=config.llm.model,
-                    model_label=config.llm.effective_model_label,
-                    company=config.llm.company,
-                )
-                task_score = score_task(pending_evaluation.task, result)
-                task_scores_by_temperature[pending_evaluation.temperature_index][
-                    pending_evaluation.task_index
-                ] = task_score
-                dashboard_rows[pending_evaluation.row_index].evaluation = (
-                    _format_evaluation_status(
-                        pending_evaluation.task,
-                        result,
-                        task_score,
+                generator = solution_generators[current_prepare.temperature_index]
+                if not isinstance(generator, OpenCodeGenerator):
+                    raise RuntimeError(
+                        "OpenCode prepare ahead requires OpenCode generators."
                     )
+                ready_generation = ReadyGeneration(
+                    pending=current_prepare,
+                    generator=generator,
+                    prepared=prepared,
                 )
-                _refresh_evaluation_statuses(
-                    pending,
-                    dashboard_rows,
-                    config.benchmark.evaluation_workers,
-                )
+                dashboard_rows[current_prepare.row_index].llm = "ready"
+                pending_prepare = None
+                current_prepare = None
+                start_ready_generation(generation_executor, prepare_executor)
                 dashboard.render()
 
-    return [
-        TemperatureRun(
-            temperature=temperature,
-            score=score_benchmark(completed_task_scores),
-            task_scores=completed_task_scores,
-        )
-        for temperature, completed_task_scores in zip(
-            temperatures,
-            (
-                _completed_task_scores(task_scores)
-                for task_scores in task_scores_by_temperature
-            ),
-        )
-    ]
+            if (
+                pending_generation is not None
+                and pending_generation in completed_futures
+                and current_generation is not None
+            ):
+                try:
+                    generated = pending_generation.result()
+                except Exception as exc:
+                    dashboard_rows[current_generation.pending.row_index].llm = "error"
+                    dashboard_rows[
+                        current_generation.pending.row_index
+                    ].evaluation = "cancelled"
+                    _cancel_prepared_opencode_work(
+                        runner,
+                        solution_generators,
+                        pending_generation,
+                        pending_prepare,
+                        current_prepare,
+                        pending,
+                        ready_generation,
+                        dashboard_rows,
+                    )
+                    dashboard.render()
+                    raise RuntimeError(
+                        f"LLM generation failed for task "
+                        f"{current_generation.pending.task.id}: {exc}"
+                    ) from exc
+                _queue_evaluation(
+                    config,
+                    runner,
+                    evaluation_executor,
+                    pending,
+                    dashboard_rows,
+                    current_generation.pending,
+                    generated,
+                )
+                pending_generation = None
+                current_generation = None
+                start_ready_generation(generation_executor, prepare_executor)
+                dashboard.render()
+
+            _complete_evaluations(
+                config,
+                runner,
+                pending,
+                completed_futures,
+                pending_generation,
+                dashboard,
+                dashboard_rows,
+                task_scores_by_temperature,
+                error_cleanup=lambda: _cancel_prepared_opencode_work(
+                    runner,
+                    solution_generators,
+                    pending_generation,
+                    pending_prepare,
+                    current_prepare,
+                    pending,
+                    ready_generation,
+                    dashboard_rows,
+                ),
+            )
 
 
 def _cancel_pending_work(
@@ -760,6 +973,34 @@ def _cancel_pending_work(
             rows[pending_evaluation.row_index].evaluation = "cancelled"
         future.cancel()
     runner.cancel()
+
+
+def _cancel_prepared_opencode_work(
+    runner: DockerRunner,
+    solution_generators: list[SolutionGenerator],
+    pending_generation: Future[GeneratedSolution] | None,
+    pending_prepare: Future[PreparedOpenCodeGeneration] | None,
+    current_prepare: PendingGeneration | None,
+    pending_evaluations: dict[Future[TaskRunResult], PendingEvaluation],
+    ready_generation: ReadyGeneration | None,
+    rows: list[DashboardRow],
+) -> None:
+    if ready_generation is not None:
+        ready_generation.generator.cleanup_prepared(ready_generation.prepared)
+    if pending_prepare is not None:
+        pending_prepare.cancel()
+        if pending_prepare.done() and not pending_prepare.cancelled():
+            try:
+                prepared = pending_prepare.result()
+            except Exception:
+                prepared = None
+            if prepared is not None:
+                generator: SolutionGenerator | None = None
+                if current_prepare is not None:
+                    generator = solution_generators[current_prepare.temperature_index]
+                if isinstance(generator, OpenCodeGenerator):
+                    generator.cleanup_prepared(prepared)
+    _cancel_pending_work(runner, pending_generation, pending_evaluations, rows)
 
 
 def _queue_generation(
@@ -780,12 +1021,145 @@ def _queue_generation(
     )
 
 
+def _queue_opencode_prepare(
+    executor: ThreadPoolExecutor,
+    generator: OpenCodeGenerator,
+    pending_generation: PendingGeneration,
+) -> tuple[Future[PreparedOpenCodeGeneration], PendingGeneration]:
+    task_dir = pending_generation.task_dir
+    task_dir.mkdir(parents=True, exist_ok=True)
+    return (
+        executor.submit(
+            _prepare_opencode_solution,
+            generator,
+            pending_generation.task,
+            task_dir,
+        ),
+        pending_generation,
+    )
+
+
 def _generate_solution(
     generator: SolutionGenerator,
     task: Task,
     task_dir: Path,
 ) -> GeneratedSolution:
     return generator.generate(task, task_dir)
+
+
+def _prepare_opencode_solution(
+    generator: OpenCodeGenerator,
+    task: Task,
+    task_dir: Path,
+) -> PreparedOpenCodeGeneration:
+    return generator.prepare(task, task_dir)
+
+
+def _run_prepared_opencode_solution(
+    generator: OpenCodeGenerator,
+    prepared: PreparedOpenCodeGeneration,
+) -> GeneratedSolution:
+    return generator.run_prepared(prepared)
+
+
+def _queue_evaluation(
+    config,
+    runner: DockerRunner,
+    evaluation_executor: ThreadPoolExecutor,
+    pending_evaluations: dict[Future[TaskRunResult], PendingEvaluation],
+    dashboard_rows: list[DashboardRow],
+    current_generation: PendingGeneration,
+    generated: GeneratedSolution,
+) -> None:
+    row = dashboard_rows[current_generation.row_index]
+    row.llm = f"{generated.llm_response_time_seconds:.2f}s"
+    row.tokens = _format_tokens(generated.llm_usage.total_tokens)
+    row.evaluation = TESTS_RUNNING_STATUS
+    evaluation_future = evaluation_executor.submit(
+        runner.evaluate,
+        current_generation.task,
+        generated.extracted,
+        artifact_dir=current_generation.task_dir,
+        llm_response_time_seconds=generated.llm_response_time_seconds,
+        llm_usage=generated.llm_usage,
+        generator=generated.generator,
+        opencode_metadata=opencode_metadata_to_dict(
+            generated.opencode_metadata
+        ),
+        temperature=current_generation.temperature,
+    )
+    pending_evaluations[evaluation_future] = PendingEvaluation(
+        row_index=current_generation.row_index,
+        task_index=current_generation.task_index,
+        temperature_index=current_generation.temperature_index,
+        temperature=current_generation.temperature,
+        task=current_generation.task,
+        task_dir=current_generation.task_dir,
+    )
+    _refresh_evaluation_statuses(
+        pending_evaluations,
+        dashboard_rows,
+        config.benchmark.evaluation_workers,
+    )
+
+
+def _complete_evaluations(
+    config,
+    runner: DockerRunner,
+    pending_evaluations: dict[Future[TaskRunResult], PendingEvaluation],
+    completed_futures: set[Future],
+    pending_generation: Future[GeneratedSolution] | None,
+    dashboard: DashboardRenderer,
+    dashboard_rows: list[DashboardRow],
+    task_scores_by_temperature: list[list[TaskScore | None]],
+    error_cleanup=None,
+) -> None:
+    for completed_future in completed_futures:
+        if completed_future not in pending_evaluations:
+            continue
+        pending_evaluation = pending_evaluations.pop(completed_future)
+        try:
+            result = completed_future.result()
+        except Exception as exc:
+            dashboard_rows[pending_evaluation.row_index].evaluation = "error"
+            if error_cleanup is None:
+                _cancel_pending_work(
+                    runner,
+                    pending_generation,
+                    pending_evaluations,
+                    dashboard_rows,
+                )
+            else:
+                error_cleanup()
+            dashboard.render()
+            raise RuntimeError(
+                f"Evaluation failed for task "
+                f"{pending_evaluation.task.id}: {exc}"
+            ) from exc
+        write_result_json(
+            pending_evaluation.task_dir / "result.json",
+            result,
+            model=config.llm.model,
+            model_label=config.llm.effective_model_label,
+            company=config.llm.company,
+        )
+        task_score = score_task(pending_evaluation.task, result)
+        task_scores_by_temperature[pending_evaluation.temperature_index][
+            pending_evaluation.task_index
+        ] = task_score
+        dashboard_rows[pending_evaluation.row_index].evaluation = (
+            _format_evaluation_status(
+                pending_evaluation.task,
+                result,
+                task_score,
+            )
+        )
+        _refresh_evaluation_statuses(
+            pending_evaluations,
+            dashboard_rows,
+            config.benchmark.evaluation_workers,
+        )
+        dashboard.render()
 
 
 def _completed_task_scores(task_scores: list[TaskScore | None]) -> list[TaskScore]:
