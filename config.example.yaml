@@ -37,7 +37,7 @@ benchmark:
 
 opencode:
   # Required when benchmark.generator is "opencode".
-  # version: "1.1.64"
+  version: "1.16.2"
   package: "opencode-ai"
   docker_image: "csharp-llm-benchmark-opencode"
   cache_dir: ".cache/opencode"
@@ -49,7 +49,7 @@ opencode:
   # More aggressive: docker-create the next task container during preparation,
   # but only docker-start it after the current OpenCode session finishes.
   precreate_container: false
-  max_steps: 40
+  max_steps: 80
   network: "bridge"
   # Optional model limits passed to OpenCode so it can track remaining context
   # for OpenAI-compatible/custom providers. Omit when OpenCode can infer them.

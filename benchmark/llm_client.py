@@ -19,6 +19,8 @@ Do not use preview features or .NET-version-specific APIs unless the task explic
 Return exactly one fenced ```csharp code block, with no text outside it.
 Do not declare a C# namespace; top-level using directives are allowed.
 Use only the .NET SDK/BCL and package references already present in the task project; do not add or require extra third-party or NuGet packages.
+Declare public types required by the task contract at the top level unless the task explicitly requires nesting.
+Do not wrap required public classes, records, or interfaces inside an unrelated placeholder or helper class.
 Do not include comments, explanations, greetings, or pleasantries.
 Follow the task contract exactly."""
 

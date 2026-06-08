@@ -133,7 +133,7 @@ benchmark:
   generator: "opencode"
 
 opencode:
-  version: "1.1.64"
+  version: "1.16.2"
   prepare_ahead: true
   precreate_container: false
   # Optional, but useful for OpenAI-compatible/custom providers.
@@ -148,7 +148,7 @@ opencode:
 You can also select it from the CLI:
 
 ```bash
-python -m benchmark.cli run --config config.yaml --generator opencode --opencode-version 1.1.64 --difficulty easy --task-id easy-001
+python -m benchmark.cli run --config config.yaml --generator opencode --opencode-version 1.16.2 --difficulty easy --task-id easy-001
 ```
 
 OpenCode is installed inside Docker into `opencode.cache_dir`, grouped by

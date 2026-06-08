@@ -1087,6 +1087,7 @@ def _queue_evaluation(
             generated.opencode_metadata
         ),
         temperature=current_generation.temperature,
+        generation_infrastructure_error=generated.infrastructure_error,
     )
     pending_evaluations[evaluation_future] = PendingEvaluation(
         row_index=current_generation.row_index,

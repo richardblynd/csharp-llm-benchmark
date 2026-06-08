@@ -66,7 +66,7 @@ class OpenCodeConfig:
     keep_timed_out_containers: bool = False
     prepare_ahead: bool = True
     precreate_container: bool = False
-    max_steps: int = 40
+    max_steps: int = 80
     network: str = "bridge"
     container_base_url: str | None = None
     context_limit: int | None = None

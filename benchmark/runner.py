@@ -74,12 +74,29 @@ class DockerRunner:
         generator: str = "llm",
         opencode_metadata: dict[str, Any] | None = None,
         temperature: float | None = None,
+        generation_infrastructure_error: str | None = None,
     ) -> TaskRunResult:
         metadata = {
             "generator": generator,
             "opencode_metadata": opencode_metadata,
             "temperature": temperature,
         }
+        if generation_infrastructure_error is not None:
+            return TaskRunResult(
+                task_id=task.id,
+                status="infrastructure_error",
+                llm_response_time_seconds=llm_response_time_seconds,
+                llm_usage=llm_usage,
+                workdir=None,
+                build=None,
+                test=None,
+                passed_tests=(),
+                failed_tests=(),
+                extraction_warnings=extracted_code.warnings,
+                infrastructure_error=generation_infrastructure_error,
+                **metadata,
+            )
+
         if extracted_code.code is None:
             return TaskRunResult(
                 task_id=task.id,

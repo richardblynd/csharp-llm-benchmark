@@ -18,6 +18,7 @@ from benchmark.llm_client import (
     ExtractedCode,
     LlmClient,
     LlmHttpError,
+    SYSTEM_PROMPT,
     LlmTimeoutError,
     LlmUsage,
     RequestRateLimiter,
@@ -66,6 +67,7 @@ class GeneratedSolution:
     llm_usage: LlmUsage
     generator: str = "llm"
     opencode_metadata: OpenCodeRunMetadata | None = None
+    infrastructure_error: str | None = None
 
 
 class SolutionGenerator(Protocol):
@@ -274,6 +276,23 @@ class OpenCodeGenerator:
                 )
 
             if not generated_path.exists():
+                if _opencode_session_missing_model_result(run.stdout):
+                    return GeneratedSolution(
+                        extracted=ExtractedCode(
+                            code=None,
+                            warnings=(),
+                            error=None,
+                        ),
+                        llm_response_time_seconds=session_time_seconds,
+                        llm_usage=usage,
+                        generator="opencode",
+                        opencode_metadata=metadata,
+                        infrastructure_error=(
+                            "OpenCode exited successfully but produced no model "
+                            "result before creating the expected generated file "
+                            f"{task.generated_file}."
+                        ),
+                    )
                 return GeneratedSolution(
                     extracted=ExtractedCode(
                         code=None,
@@ -391,6 +410,8 @@ class OpenCodeGenerator:
             shutil.rmtree(workspace)
         workspace.mkdir(parents=True)
         for public_file in task.public_files:
+            if _is_generated_file(task, public_file):
+                continue
             source = task.template_dir / public_file
             destination = workspace / public_file
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -409,6 +430,7 @@ class OpenCodeGenerator:
                 "*": "allow",
                 "question": "deny",
                 "doom_loop": "deny",
+                "task": "deny",
             },
             "compaction": self._compaction_config(),
             "model": opencode_model,
@@ -753,6 +775,32 @@ def _parse_opencode_error(text: str) -> str | None:
     return None
 
 
+def _opencode_session_missing_model_result(text: str) -> bool:
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        event_type = payload.get("type")
+        part = payload.get("part")
+        if event_type == "tool_use":
+            return False
+        if isinstance(part, dict):
+            if part.get("type") == "tool":
+                return False
+            if part.get("type") == "step-finish":
+                tokens = part.get("tokens")
+                if isinstance(tokens, dict) and any(
+                    _optional_int(tokens.get(key))
+                    for key in ("input", "output", "total", "reasoning")
+                ):
+                    return False
+    return True
+
+
 def _collect_usage(value: Any, totals: dict[str, int | None]) -> None:
     if isinstance(value, dict):
         for source, target in [
@@ -780,7 +828,8 @@ def _collect_usage(value: Any, totals: dict[str, int | None]) -> None:
 def _build_agent_prompt_suffix(config: OpenCodeConfig) -> str:
     return (
         "Work non-interactively. Do not ask the user questions. "
-        f"Keep the solution focused and finish within {config.max_steps} tool steps."
+        "Keep the solution focused and finish after the generated file is complete, "
+        f"staying within {config.max_steps} tool steps."
     )
 
 
@@ -836,32 +885,32 @@ def _decode_output(output: str | bytes | None) -> str:
 
 
 def _public_files_list(task: Task) -> str:
-    return "\n".join(f"- `{public_file}`" for public_file in task.public_files)
+    files = [
+        public_file
+        for public_file in task.public_files
+        if not _is_generated_file(task, public_file)
+    ]
+    if not files:
+        return "- (none)"
+    return "\n".join(f"- `{public_file}`" for public_file in files)
 
 
-def _hidden_boundary() -> str:
+def _is_generated_file(task: Task, public_file: str) -> bool:
+    return Path(public_file).as_posix() == Path(task.generated_file).as_posix()
+
+
+def _workspace_boundary() -> str:
     return (
-        "Hidden tests are not available in this workspace and must not be guessed "
-        "from file system paths outside the current project."
+        "Use only files available in the current workspace. Do not infer unseen "
+        "files or read paths outside the current project."
     )
 
 
-def _exact_file_instruction(task: Task) -> str:
-    return (
-        f"Create or update exactly `{task.generated_file}` as the generated C# file. "
-        "Do not add NuGet packages or require project file changes unless the public "
-        "template already references them."
-    )
-
-
-def _shared_csharp_rules() -> str:
-    return (
-        "Do not declare a C# namespace. The code will be compiled with the .NET 8 "
-        "SDK; prefer conservative, broadly supported C# and standard BCL APIs. "
-        "Do not use preview features or .NET-version-specific APIs unless the task "
-        "explicitly requires them. Use only package references already present in "
-        "the task project. Do not include explanations in the generated source file."
-    )
+def _opencode_solution_rules() -> str:
+    return SYSTEM_PROMPT.replace(
+        "Return exactly one fenced ```csharp code block, with no text outside it.\n",
+        "",
+    ).strip()
 
 
 def _task_contract(task: Task) -> str:
@@ -870,19 +919,34 @@ def _task_contract(task: Task) -> str:
 
 def _workspace_summary(task: Task) -> str:
     return (
-        "Public files available in the workspace:\n"
+        "Public support files available in the workspace:\n"
         f"{_public_files_list(task)}\n\n"
-        f"{_hidden_boundary()}"
+        f"{_workspace_boundary()}"
+    )
+
+
+def _workspace_generation_instructions(task: Task) -> str:
+    return (
+        "Workspace instructions:\n"
+        f"- Create exactly the required generated file: `{task.generated_file}`.\n"
+        "- The generated file is intentionally not present in the workspace; write "
+        "it from the task contract instead of editing an existing source file.\n"
+        "- Write the file directly in this workspace. Do not delegate the work to "
+        "a subagent, background task, or separate planning task.\n"
+        "- Do not create or modify any other source, project, or package files "
+        "unless the task explicitly requires it.\n"
+        "- Ensure the final code is valid C# for .NET 8."
     )
 
 
 def _agent_prompt(task: Task, config: OpenCodeConfig) -> str:
     return "\n\n".join(
         [
-            _exact_file_instruction(task),
-            _shared_csharp_rules(),
+            "You are generating a C# source file in a project workspace.",
+            "Follow these solution rules:\n" + _opencode_solution_rules(),
+            "Task:\n" + _task_contract(task),
             _workspace_summary(task),
-            "Task contract:\n" + _task_contract(task),
+            _workspace_generation_instructions(task),
             _build_agent_prompt_suffix(config),
         ]
     )
