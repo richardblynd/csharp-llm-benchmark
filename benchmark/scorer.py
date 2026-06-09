@@ -36,7 +36,12 @@ class BenchmarkScore:
 def score_task(task: Task, result: TaskRunResult) -> TaskScore:
     available = task.score.available_points
 
-    if result.status in {"extraction_error", "build_failed"}:
+    # Non-passing terminal states earn 0 but always keep the task's full
+    # available points in the denominator, so the final score is computed over
+    # a fixed total (the sum of every task's possible points) regardless of how
+    # the failure was classified. infrastructure_error is included here on
+    # purpose: the denominator must never shrink.
+    if result.status in {"extraction_error", "build_failed", "infrastructure_error"}:
         return TaskScore(
             task_id=task.id,
             status=result.status,
@@ -44,23 +49,6 @@ def score_task(task: Task, result: TaskRunResult) -> TaskScore:
             llm_usage=result.llm_usage,
             earned_points=0,
             available_points=available,
-            compile_points=0,
-            earned_test_points=0,
-            passed_tests=result.passed_tests,
-            failed_tests=result.failed_tests,
-            generator=result.generator,
-            opencode_metadata=result.opencode_metadata,
-            temperature=result.temperature,
-        )
-
-    if result.status == "infrastructure_error":
-        return TaskScore(
-            task_id=task.id,
-            status=result.status,
-            llm_response_time_seconds=result.llm_response_time_seconds,
-            llm_usage=result.llm_usage,
-            earned_points=0,
-            available_points=0,
             compile_points=0,
             earned_test_points=0,
             passed_tests=result.passed_tests,

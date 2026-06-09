@@ -49,6 +49,11 @@ opencode:
   # More aggressive: docker-create the next task container during preparation,
   # but only docker-start it after the current OpenCode session finishes.
   precreate_container: false
+  # Extra retries when an OpenCode session exits cleanly but produces no model
+  # output and no generated file (a transient backend hiccup, not a model
+  # failure). Each retry re-runs the same prepared workspace in a fresh
+  # container. Set to 0 to disable. Default: 2.
+  session_retries: 2
   max_steps: 80
   network: "bridge"
   # Optional model limits passed to OpenCode so it can track remaining context

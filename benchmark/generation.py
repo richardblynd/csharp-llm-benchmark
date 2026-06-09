@@ -38,6 +38,7 @@ class OpenCodeRunMetadata:
     exit_code: int
     timed_out: bool = False
     container_name: str | None = None
+    attempts: int = 1
 
 
 @dataclass(frozen=True)
@@ -224,46 +225,137 @@ class OpenCodeGenerator:
         prepared: PreparedOpenCodeGeneration,
     ) -> GeneratedSolution:
         self._rate_limiter.wait()
+        max_attempts = 1 + max(0, self._opencode.session_retries)
+        attempt = 0
+        run: CommandResult | None = None
+        retry_log: list[str] = []
+        try:
+            while True:
+                attempt += 1
+                run, session_time_seconds = self._execute_session(prepared, attempt)
+                self._write_session_logs(prepared, run)
+                solution, transient = self._build_solution(
+                    prepared,
+                    run,
+                    session_time_seconds,
+                    attempt,
+                )
+                if not transient or attempt >= max_attempts:
+                    if retry_log:
+                        retry_log.append(
+                            f"Attempt {attempt} succeeded or exhausted retries "
+                            f"(status: "
+                            f"{'infrastructure_error' if solution.infrastructure_error else 'usable result'})."
+                        )
+                        (prepared.task_dir / "opencode-retries.log").write_text(
+                            "\n".join(retry_log) + "\n",
+                            encoding="utf-8",
+                        )
+                    return solution
+                retry_log.append(
+                    f"Attempt {attempt} produced no usable model result "
+                    f"(exit_code={run.exit_code}, "
+                    f"session_time={session_time_seconds:.2f}s, "
+                    f"events_bytes={len(run.stdout)}); retrying."
+                )
+        finally:
+            preserve_timeout_home = (
+                run is not None
+                and run.timed_out
+                and self._opencode.keep_timed_out_containers
+            )
+            self._cleanup_opencode_home(prepared, preserve=preserve_timeout_home)
+
+    def _execute_session(
+        self,
+        prepared: PreparedOpenCodeGeneration,
+        attempt: int,
+    ) -> tuple[CommandResult, float]:
         session_started_at = time.perf_counter()
-        if prepared.precreated:
+        if attempt == 1 and prepared.precreated:
             run = self._start_precreated_opencode(prepared)
-        else:
+        elif attempt == 1:
             run = self._run_docker(
                 prepared.docker_command,
                 timeout=self._opencode.timeout_seconds,
                 env={"OPENCODE_BENCHMARK_API_KEY": self._llm.api_key},
                 keep_on_timeout=self._opencode.keep_timed_out_containers,
             )
-        session_time_seconds = time.perf_counter() - session_started_at
-        try:
-            task = prepared.task
-            task_dir = prepared.task_dir
-            workspace = prepared.workspace
-            (task_dir / "response.md").write_text(run.stdout, encoding="utf-8")
-            (task_dir / "opencode-events.jsonl").write_text(
-                run.stdout,
-                encoding="utf-8",
-            )
-            (task_dir / "opencode-stderr.log").write_text(
-                run.stderr,
-                encoding="utf-8",
-            )
+        else:
+            run = self._run_fresh_session(prepared)
+        return run, time.perf_counter() - session_started_at
 
-            generated_path = workspace / task.generated_file
-            metadata = OpenCodeRunMetadata(
-                version_configured=prepared.preflight.version_configured,
-                version_resolved=prepared.preflight.version_resolved,
-                package=prepared.preflight.package,
-                install_time_seconds=prepared.preflight.install_time_seconds,
-                session_time_seconds=session_time_seconds,
-                exit_code=run.exit_code,
-                timed_out=run.timed_out,
-                container_name=run.container_name,
-            )
-            usage = _parse_opencode_usage(run.stdout)
-            opencode_error = _parse_opencode_error(run.stdout)
-            if opencode_error is not None:
-                return GeneratedSolution(
+    def _run_fresh_session(
+        self,
+        prepared: PreparedOpenCodeGeneration,
+    ) -> CommandResult:
+        home_dir = prepared.task_dir / "opencode-home"
+        home_dir.mkdir(parents=True, exist_ok=True)
+        container_name = _container_name(
+            "task", prepared.task.id, include_prefix=False
+        )
+        docker_command = self._opencode_docker_command(
+            prepared.task,
+            prepared.workspace,
+            home_dir,
+            container_name=container_name,
+            create=False,
+        )
+        return self._run_docker(
+            docker_command,
+            timeout=self._opencode.timeout_seconds,
+            env={"OPENCODE_BENCHMARK_API_KEY": self._llm.api_key},
+            keep_on_timeout=self._opencode.keep_timed_out_containers,
+        )
+
+    def _write_session_logs(
+        self,
+        prepared: PreparedOpenCodeGeneration,
+        run: CommandResult,
+    ) -> None:
+        task_dir = prepared.task_dir
+        (task_dir / "response.md").write_text(run.stdout, encoding="utf-8")
+        (task_dir / "opencode-events.jsonl").write_text(
+            run.stdout,
+            encoding="utf-8",
+        )
+        (task_dir / "opencode-stderr.log").write_text(
+            run.stderr,
+            encoding="utf-8",
+        )
+
+    def _build_solution(
+        self,
+        prepared: PreparedOpenCodeGeneration,
+        run: CommandResult,
+        session_time_seconds: float,
+        attempts: int,
+    ) -> tuple[GeneratedSolution, bool]:
+        """Interpret a finished OpenCode session.
+
+        Returns the generated solution and a flag indicating whether the
+        failure is a transient empty session that is safe to retry.
+        """
+        task = prepared.task
+        task_dir = prepared.task_dir
+        workspace = prepared.workspace
+        generated_path = workspace / task.generated_file
+        metadata = OpenCodeRunMetadata(
+            version_configured=prepared.preflight.version_configured,
+            version_resolved=prepared.preflight.version_resolved,
+            package=prepared.preflight.package,
+            install_time_seconds=prepared.preflight.install_time_seconds,
+            session_time_seconds=session_time_seconds,
+            exit_code=run.exit_code,
+            timed_out=run.timed_out,
+            container_name=run.container_name,
+            attempts=attempts,
+        )
+        usage = _parse_opencode_usage(run.stdout)
+        opencode_error = _parse_opencode_error(run.stdout)
+        if opencode_error is not None:
+            return (
+                GeneratedSolution(
                     extracted=ExtractedCode(
                         code=None,
                         warnings=(),
@@ -273,11 +365,20 @@ class OpenCodeGenerator:
                     llm_usage=usage,
                     generator="opencode",
                     opencode_metadata=metadata,
-                )
+                ),
+                False,
+            )
 
-            if not generated_path.exists():
-                if _opencode_session_missing_model_result(run.stdout):
-                    return GeneratedSolution(
+        if not generated_path.exists():
+            if _opencode_session_missing_model_result(run.stdout):
+                # An empty session (clean exit, no model output, no generated
+                # file) is almost always a transient backend hiccup, not a
+                # model failure: the same task succeeds on other attempts.
+                # Signal that a retry is safe instead of recording a terminal
+                # infrastructure error on the first empty session.
+                transient = not run.timed_out
+                return (
+                    GeneratedSolution(
                         extracted=ExtractedCode(
                             code=None,
                             warnings=(),
@@ -290,10 +391,18 @@ class OpenCodeGenerator:
                         infrastructure_error=(
                             "OpenCode exited successfully but produced no model "
                             "result before creating the expected generated file "
-                            f"{task.generated_file}."
+                            f"{task.generated_file}"
+                            + (
+                                f" after {attempts} attempt(s)."
+                                if attempts > 1
+                                else "."
+                            )
                         ),
-                    )
-                return GeneratedSolution(
+                    ),
+                    transient,
+                )
+            return (
+                GeneratedSolution(
                     extracted=ExtractedCode(
                         code=None,
                         warnings=(),
@@ -306,42 +415,42 @@ class OpenCodeGenerator:
                     llm_usage=usage,
                     generator="opencode",
                     opencode_metadata=metadata,
-                )
+                ),
+                False,
+            )
 
-            code = generated_path.read_text(encoding="utf-8")
-            required_public_class = (
-                task.solution_class if task.difficulty == "easy" else None
-            )
-            extracted = extract_solution_code(
-                code,
-                required_public_class=required_public_class,
-                preserve_unfenced_code=True,
-            )
-            warnings = list(extracted.warnings)
-            if run.exit_code != 0:
-                warnings.append(f"OpenCode exited with code {run.exit_code}.")
-            extracted = ExtractedCode(
-                code=extracted.code,
-                warnings=tuple(warnings),
-                error=extracted.error,
-            )
-            if extracted.code is not None:
-                result_generated_path = task_dir / task.generated_file
-                result_generated_path.parent.mkdir(parents=True, exist_ok=True)
-                result_generated_path.write_text(extracted.code, encoding="utf-8")
+        code = generated_path.read_text(encoding="utf-8")
+        required_public_class = (
+            task.solution_class if task.difficulty == "easy" else None
+        )
+        extracted = extract_solution_code(
+            code,
+            required_public_class=required_public_class,
+            preserve_unfenced_code=True,
+        )
+        warnings = list(extracted.warnings)
+        if run.exit_code != 0:
+            warnings.append(f"OpenCode exited with code {run.exit_code}.")
+        extracted = ExtractedCode(
+            code=extracted.code,
+            warnings=tuple(warnings),
+            error=extracted.error,
+        )
+        if extracted.code is not None:
+            result_generated_path = task_dir / task.generated_file
+            result_generated_path.parent.mkdir(parents=True, exist_ok=True)
+            result_generated_path.write_text(extracted.code, encoding="utf-8")
 
-            return GeneratedSolution(
+        return (
+            GeneratedSolution(
                 extracted=extracted,
                 llm_response_time_seconds=session_time_seconds,
                 llm_usage=usage,
                 generator="opencode",
                 opencode_metadata=metadata,
-            )
-        finally:
-            preserve_timeout_home = (
-                run.timed_out and self._opencode.keep_timed_out_containers
-            )
-            self._cleanup_opencode_home(prepared, preserve=preserve_timeout_home)
+            ),
+            False,
+        )
 
     def _ensure_opencode_installed(self) -> CommandResult:
         install_dir = self._opencode_install_dir()

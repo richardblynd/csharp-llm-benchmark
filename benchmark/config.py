@@ -66,6 +66,7 @@ class OpenCodeConfig:
     keep_timed_out_containers: bool = False
     prepare_ahead: bool = True
     precreate_container: bool = False
+    session_retries: int = 2
     max_steps: int = 80
     network: str = "bridge"
     container_base_url: str | None = None
@@ -223,6 +224,13 @@ def load_config(path: Path | None) -> AppConfig:
                 ),
                 "opencode.precreate_container",
             ),
+            session_retries=_non_negative_int(
+                opencode_data.get(
+                    "session_retries",
+                    OpenCodeConfig.session_retries,
+                ),
+                "opencode.session_retries",
+            ),
             max_steps=_positive_int(
                 opencode_data.get("max_steps", OpenCodeConfig.max_steps),
                 "opencode.max_steps",
@@ -369,6 +377,7 @@ def apply_cli_overrides(
             keep_timed_out_containers=config.opencode.keep_timed_out_containers,
             prepare_ahead=config.opencode.prepare_ahead,
             precreate_container=config.opencode.precreate_container,
+            session_retries=config.opencode.session_retries,
             max_steps=config.opencode.max_steps,
             network=config.opencode.network,
             container_base_url=config.opencode.container_base_url,
@@ -414,6 +423,14 @@ def _positive_int(value: Any, name: str) -> int:
     number = int(value)
     if number < 1:
         raise ValueError(f"{name} must be at least 1")
+    return number
+
+
+def _non_negative_int(value: Any, name: str) -> int:
+    """Parse an int that may be zero (used for optional retry counts)."""
+    number = int(value)
+    if number < 0:
+        raise ValueError(f"{name} must be 0 or greater")
     return number
 
 
