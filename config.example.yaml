@@ -54,6 +54,16 @@ opencode:
   # failure). Each retry re-runs the same prepared workspace in a fresh
   # container. Set to 0 to disable. Default: 2.
   session_retries: 2
+  # Ask the agent to compile the workspace project after writing the file and
+  # fix any compiler errors before finishing (build-fix loop). Targets the
+  # non-test project present in the workspace, not the hidden test project.
+  # Set to false to restore one-shot generation. Default: true.
+  verify_build: true
+  # Cap on how many build-and-fix attempts the agent should make when
+  # verify_build is on. Bounds wasted time/tokens on tasks the model cannot
+  # fix (it stops and keeps its best version after this many rounds).
+  # Default: 3.
+  build_fix_rounds: 3
   max_steps: 80
   network: "bridge"
   # Optional model limits passed to OpenCode so it can track remaining context

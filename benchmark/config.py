@@ -67,6 +67,8 @@ class OpenCodeConfig:
     prepare_ahead: bool = True
     precreate_container: bool = False
     session_retries: int = 2
+    verify_build: bool = True
+    build_fix_rounds: int = 3
     max_steps: int = 80
     network: str = "bridge"
     container_base_url: str | None = None
@@ -231,6 +233,20 @@ def load_config(path: Path | None) -> AppConfig:
                 ),
                 "opencode.session_retries",
             ),
+            verify_build=_bool_value(
+                opencode_data.get(
+                    "verify_build",
+                    OpenCodeConfig.verify_build,
+                ),
+                "opencode.verify_build",
+            ),
+            build_fix_rounds=_positive_int(
+                opencode_data.get(
+                    "build_fix_rounds",
+                    OpenCodeConfig.build_fix_rounds,
+                ),
+                "opencode.build_fix_rounds",
+            ),
             max_steps=_positive_int(
                 opencode_data.get("max_steps", OpenCodeConfig.max_steps),
                 "opencode.max_steps",
@@ -378,6 +394,8 @@ def apply_cli_overrides(
             prepare_ahead=config.opencode.prepare_ahead,
             precreate_container=config.opencode.precreate_container,
             session_retries=config.opencode.session_retries,
+            verify_build=config.opencode.verify_build,
+            build_fix_rounds=config.opencode.build_fix_rounds,
             max_steps=config.opencode.max_steps,
             network=config.opencode.network,
             container_base_url=config.opencode.container_base_url,

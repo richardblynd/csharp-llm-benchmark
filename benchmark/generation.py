@@ -937,8 +937,47 @@ def _collect_usage(value: Any, totals: dict[str, int | None]) -> None:
 def _build_agent_prompt_suffix(config: OpenCodeConfig) -> str:
     return (
         "Work non-interactively. Do not ask the user questions. "
-        "Keep the solution focused and finish after the generated file is complete, "
+        "Keep the solution focused and finish once the generated file is complete "
+        "and the project builds cleanly, "
         f"staying within {config.max_steps} tool steps."
+    )
+
+
+def _workspace_build_project(task: Task) -> str | None:
+    """Return the non-test .csproj present in the agent workspace, if any.
+
+    The task's own build_command targets the hidden test project
+    (tests/Solution.Tests.csproj), which is not copied into the OpenCode
+    workspace. The agent can only compile the main project that ships as a
+    public file, so the self-verification build must target that instead.
+    """
+    for public_file in task.public_files:
+        if _is_generated_file(task, public_file):
+            continue
+        posix = Path(public_file).as_posix()
+        if posix.endswith(".csproj") and not posix.startswith("tests/"):
+            return posix
+    return None
+
+
+def _self_verification_instructions(task: Task, rounds: int) -> str | None:
+    project = _workspace_build_project(task)
+    if project is None:
+        return None
+    build_command = f"dotnet build {project} --configuration Release"
+    attempts = "attempt" if rounds == 1 else "attempts"
+    return (
+        "Verify your work before finishing:\n"
+        f"- After creating the file, compile the project from the workspace with: "
+        f"`{build_command}`.\n"
+        "- If the build reports any errors, open the generated file, fix the cause of "
+        "each compiler error, then rebuild. Do at most "
+        f"{rounds} build-and-fix {attempts}; if errors remain after {rounds}, stop and "
+        "finish with your best version instead of retrying further.\n"
+        "- Fix only the generated file. Do not modify the project file or any test "
+        "files, and do not add NuGet packages or other dependencies.\n"
+        "- The hidden test project is intentionally absent; compile only the project "
+        "above, just to confirm your code builds."
     )
 
 
@@ -1049,13 +1088,16 @@ def _workspace_generation_instructions(task: Task) -> str:
 
 
 def _agent_prompt(task: Task, config: OpenCodeConfig) -> str:
-    return "\n\n".join(
-        [
-            "You are generating a C# source file in a project workspace.",
-            "Follow these solution rules:\n" + _opencode_solution_rules(),
-            "Task:\n" + _task_contract(task),
-            _workspace_summary(task),
-            _workspace_generation_instructions(task),
-            _build_agent_prompt_suffix(config),
-        ]
-    )
+    sections = [
+        "You are generating a C# source file in a project workspace.",
+        "Follow these solution rules:\n" + _opencode_solution_rules(),
+        "Task:\n" + _task_contract(task),
+        _workspace_summary(task),
+        _workspace_generation_instructions(task),
+    ]
+    if config.verify_build:
+        verification = _self_verification_instructions(task, config.build_fix_rounds)
+        if verification is not None:
+            sections.append(verification)
+    sections.append(_build_agent_prompt_suffix(config))
+    return "\n\n".join(sections)

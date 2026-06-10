@@ -88,6 +88,8 @@ def write_summary(
                 "prepare_ahead": config.opencode.prepare_ahead,
                 "precreate_container": config.opencode.precreate_container,
                 "session_retries": config.opencode.session_retries,
+                "verify_build": config.opencode.verify_build,
+                "build_fix_rounds": config.opencode.build_fix_rounds,
                 "max_steps": config.opencode.max_steps,
                 "network": config.opencode.network,
                 "container_base_url": config.opencode.container_base_url,
