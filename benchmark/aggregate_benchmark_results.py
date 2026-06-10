@@ -843,18 +843,34 @@ def render_html(
 
     .chart-row {{
       display: grid;
-      grid-template-columns: minmax(180px, 280px) minmax(160px, 1fr) 56px;
+      grid-template-columns: minmax(260px, 460px) minmax(120px, 1fr) 56px;
       gap: 10px;
       align-items: center;
     }}
 
     .chart-label {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(48px, 84px) minmax(72px, 120px);
+      gap: 8px;
+      align-items: baseline;
       overflow: hidden;
-      color: var(--text);
       font-size: 13px;
-      font-weight: 700;
+    }}
+
+    .chart-label > span {{
+      overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }}
+
+    .chart-label .chart-model {{
+      color: var(--text);
+      font-weight: 700;
+    }}
+
+    .chart-label .chart-quant,
+    .chart-label .chart-generator {{
+      color: var(--muted);
     }}
 
     .chart-track {{
@@ -1504,6 +1520,7 @@ def render_html(
         .map((row) => {{
           const score = Number(row.dataset.finalScore);
           return {{
+            generator: row.dataset.generator || "",
             model: row.dataset.model || "n/a",
             quantization: row.dataset.quantization || "",
             score: Number.isFinite(score) ? score : null,
@@ -1524,9 +1541,10 @@ def render_html(
       }}
 
       for (const row of chartRows) {{
-        const label = row.quantization && row.quantization !== "-"
-          ? `${{row.model}} (${{row.quantization}})`
-          : row.model;
+        const modelText = row.model;
+        const quantText = row.quantization && row.quantization !== "-" ? row.quantization : "";
+        const generatorText = row.generator || "";
+        const label = [modelText, quantText, generatorText].filter(Boolean).join(" · ");
         const score = Math.max(0, Math.min(100, row.score));
 
         const chartRow = document.createElement("div");
@@ -1535,7 +1553,23 @@ def render_html(
         const labelElement = document.createElement("div");
         labelElement.className = "chart-label";
         labelElement.title = label;
-        labelElement.textContent = label;
+
+        const modelCell = document.createElement("span");
+        modelCell.className = "chart-model";
+        modelCell.title = modelText;
+        modelCell.textContent = modelText;
+
+        const quantCell = document.createElement("span");
+        quantCell.className = "chart-quant";
+        quantCell.title = quantText;
+        quantCell.textContent = quantText;
+
+        const generatorCell = document.createElement("span");
+        generatorCell.className = "chart-generator";
+        generatorCell.title = generatorText;
+        generatorCell.textContent = generatorText;
+
+        labelElement.append(modelCell, quantCell, generatorCell);
 
         const track = document.createElement("div");
         track.className = "chart-track";
