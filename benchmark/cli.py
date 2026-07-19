@@ -367,6 +367,14 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--generation-workers",
+        type=int,
+        help=(
+            "Number of LLM generation requests to run in parallel per temperature. "
+            "Defaults to benchmark.generation_workers (1)."
+        ),
+    )
+    run.add_argument(
         "--evaluation-workers",
         type=int,
         help=(
@@ -406,6 +414,7 @@ def _run(args: argparse.Namespace) -> int:
         difficulty=args.difficulty,
         output_dir=args.output_dir,
         task_id=args.task_id,
+        generation_workers=args.generation_workers,
         evaluation_workers=args.evaluation_workers,
         generator=args.generator,
         opencode_version=args.opencode_version,
@@ -561,6 +570,7 @@ def _run_task_major_temperatures(
         f"Run directory: {run_dir}",
         f"Generator: {config.benchmark.generator}",
         "Temperature order: task-major",
+        f"Generation workers: {config.benchmark.generation_workers}",
         f"Evaluation workers: {config.benchmark.evaluation_workers}",
     ]
     if multi_temperature:
@@ -658,63 +668,67 @@ def _run_generation_queue(
     task_scores_by_temperature: list[list[TaskScore | None]],
 ) -> None:
     next_generation_index = 0
-    pending_generation: Future[GeneratedSolution] | None = None
-    current_generation: PendingGeneration | None = None
+    active_generations: dict[Future, PendingGeneration] = {}
     pending: dict[Future[TaskRunResult], PendingEvaluation] = {}
 
+    def queue_more_generations() -> None:
+        nonlocal next_generation_index
+        max_workers = config.benchmark.generation_workers
+        while (
+            len(active_generations) < max_workers
+            and next_generation_index < len(queued_generations)
+        ):
+            pending_gen = queued_generations[next_generation_index]
+            gen_future, _pending = _queue_generation(
+                generation_executor,
+                solution_generators[pending_gen.temperature_index],
+                pending_gen,
+            )
+            dashboard_rows[_pending.row_index].llm = LLM_RUNNING_STATUS
+            active_generations[gen_future] = _pending
+            next_generation_index += 1
+
     with ThreadPoolExecutor(
-        max_workers=1,
+        max_workers=config.benchmark.generation_workers,
         thread_name_prefix="benchmark-llm",
     ) as generation_executor, ThreadPoolExecutor(
         max_workers=config.benchmark.evaluation_workers,
         thread_name_prefix="benchmark-eval",
     ) as evaluation_executor:
-        if next_generation_index < len(queued_generations):
-            pending_generation, current_generation = _queue_generation(
-                generation_executor,
-                solution_generators[
-                    queued_generations[next_generation_index].temperature_index
-                ],
-                queued_generations[next_generation_index],
-            )
-            dashboard_rows[
-                queued_generations[next_generation_index].row_index
-            ].llm = LLM_RUNNING_STATUS
-            next_generation_index += 1
+        queue_more_generations()
         dashboard.render()
 
-        while pending_generation is not None or pending:
-            active_futures: set[Future] = set(pending)
-            if pending_generation is not None:
-                active_futures.add(pending_generation)
+        while active_generations or pending:
+            active_futures: set[Future] = set(pending) | set(active_generations)
+            if not active_futures:
+                continue
 
             completed_futures, _ = wait(
                 active_futures,
                 return_when=FIRST_COMPLETED,
             )
 
-            if (
-                pending_generation is not None
-                and pending_generation in completed_futures
-                and current_generation is not None
-            ):
+            # Process completed generations
+            for gen_future in list(completed_futures):
+                if gen_future not in active_generations:
+                    continue
+                completed_futures.discard(gen_future)
+                current_gen = active_generations.pop(gen_future)
                 try:
-                    generated = pending_generation.result()
+                    generated = gen_future.result()
                 except Exception as exc:
-                    dashboard_rows[current_generation.row_index].llm = "error"
-                    dashboard_rows[
-                        current_generation.row_index
-                    ].evaluation = "cancelled"
-                    _cancel_pending_work(
+                    dashboard_rows[current_gen.row_index].llm = "error"
+                    dashboard_rows[current_gen.row_index].evaluation = "cancelled"
+                    _cancel_all_pending_work(
                         runner,
-                        pending_generation,
+                        active_generations,
                         pending,
                         dashboard_rows,
                     )
                     dashboard.render()
                     raise RuntimeError(
                         f"LLM generation failed for task "
-                        f"{current_generation.task.id}: {exc}"
+                        f"{current_gen.task.id}: {exc}"
                     ) from exc
                 _queue_evaluation(
                     config,
@@ -722,38 +736,24 @@ def _run_generation_queue(
                     evaluation_executor,
                     pending,
                     dashboard_rows,
-                    current_generation,
+                    current_gen,
                     generated,
                 )
-                pending_generation = None
-                current_generation = None
-
-                if next_generation_index < len(queued_generations):
-                    pending_generation, current_generation = _queue_generation(
-                        generation_executor,
-                        solution_generators[
-                            queued_generations[
-                                next_generation_index
-                            ].temperature_index
-                        ],
-                        queued_generations[next_generation_index],
-                    )
-                    dashboard_rows[
-                        queued_generations[next_generation_index].row_index
-                    ].llm = LLM_RUNNING_STATUS
-                    next_generation_index += 1
+                queue_more_generations()
                 dashboard.render()
 
-            _complete_evaluations(
-                config,
-                runner,
-                pending,
-                completed_futures,
-                pending_generation,
-                dashboard,
-                dashboard_rows,
-                task_scores_by_temperature,
-            )
+            # Process completed evaluations
+            if completed_futures:
+                _complete_evaluations(
+                    config,
+                    runner,
+                    pending,
+                    completed_futures,
+                    active_generations,
+                    dashboard,
+                    dashboard_rows,
+                    task_scores_by_temperature,
+                )
 
 
 def _run_prepared_opencode_queue(
@@ -943,7 +943,7 @@ def _run_prepared_opencode_queue(
                 runner,
                 pending,
                 completed_futures,
-                pending_generation,
+                {pending_generation: True} if pending_generation else None,
                 dashboard,
                 dashboard_rows,
                 task_scores_by_temperature,
@@ -968,6 +968,22 @@ def _cancel_pending_work(
 ) -> None:
     if pending_generation is not None:
         pending_generation.cancel()
+    for future, pending_evaluation in pending_evaluations.items():
+        if not future.done():
+            rows[pending_evaluation.row_index].evaluation = "cancelled"
+        future.cancel()
+    runner.cancel()
+
+
+def _cancel_all_pending_work(
+    runner: DockerRunner,
+    active_generations: dict[Future, PendingGeneration],
+    pending_evaluations: dict[Future[TaskRunResult], PendingEvaluation],
+    rows: list[DashboardRow],
+) -> None:
+    for gen_future in active_generations:
+        if not gen_future.done():
+            gen_future.cancel()
     for future, pending_evaluation in pending_evaluations.items():
         if not future.done():
             rows[pending_evaluation.row_index].evaluation = "cancelled"
@@ -1109,10 +1125,10 @@ def _complete_evaluations(
     runner: DockerRunner,
     pending_evaluations: dict[Future[TaskRunResult], PendingEvaluation],
     completed_futures: set[Future],
-    pending_generation: Future[GeneratedSolution] | None,
-    dashboard: DashboardRenderer,
-    dashboard_rows: list[DashboardRow],
-    task_scores_by_temperature: list[list[TaskScore | None]],
+    active_generations: dict[Future, Any] | None = None,
+    dashboard: DashboardRenderer | None = None,
+    dashboard_rows: list[DashboardRow] | None = None,
+    task_scores_by_temperature: list[list[TaskScore | None]] | None = None,
     error_cleanup=None,
 ) -> None:
     for completed_future in completed_futures:
@@ -1124,11 +1140,11 @@ def _complete_evaluations(
         except Exception as exc:
             dashboard_rows[pending_evaluation.row_index].evaluation = "error"
             if error_cleanup is None:
-                _cancel_pending_work(
+                _cancel_all_pending_work(
                     runner,
-                    pending_generation,
+                    active_generations or {},
                     pending_evaluations,
-                    dashboard_rows,
+                    dashboard_rows or [],
                 )
             else:
                 error_cleanup()

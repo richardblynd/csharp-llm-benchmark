@@ -19,6 +19,7 @@ class LlmConfig:
     model_label: str | None = None
     company: str | None = None
     quantization: str = "unknown"
+    kv_cache_quantization: str | None = None
     temperature: float = DEFAULT_TEMPERATURES[0]
     temperatures: tuple[float, ...] = DEFAULT_TEMPERATURES
     top_p: float | None = None
@@ -40,6 +41,7 @@ class BenchmarkConfig:
     output_dir: Path = Path("results")
     max_attempts_per_task: int = 1
     task_id: str | None = None
+    generation_workers: int = 1
     evaluation_workers: int = 1
     generator: str = "llm"
 
@@ -124,6 +126,9 @@ def load_config(path: Path | None) -> AppConfig:
                 _optional_string(llm_data.get("quantization"))
                 or LlmConfig.quantization
             ),
+            kv_cache_quantization=_optional_string(
+                llm_data.get("kv_cache_quantization")
+            ),
             temperature=temperatures[0],
             temperatures=temperatures,
             top_p=_optional_positive_float(
@@ -163,6 +168,13 @@ def load_config(path: Path | None) -> AppConfig:
                 )
             ),
             task_id=_optional_string(benchmark_data.get("task_id")),
+            generation_workers=_positive_int(
+                benchmark_data.get(
+                    "generation_workers",
+                    BenchmarkConfig.generation_workers,
+                ),
+                "benchmark.generation_workers",
+            ),
             evaluation_workers=_positive_int(
                 benchmark_data.get(
                     "evaluation_workers",
@@ -301,6 +313,7 @@ def apply_cli_overrides(
     difficulty: str | None = None,
     output_dir: str | None = None,
     task_id: str | None = None,
+    generation_workers: int | None = None,
     evaluation_workers: int | None = None,
     generator: str | None = None,
     opencode_version: str | None = None,
@@ -326,6 +339,7 @@ def apply_cli_overrides(
                 else config.llm.company
             ),
             quantization=config.llm.quantization,
+            kv_cache_quantization=config.llm.kv_cache_quantization,
             temperature=config.llm.temperature,
             temperatures=config.llm.temperatures,
             top_p=(
@@ -361,6 +375,11 @@ def apply_cli_overrides(
             output_dir=Path(output_dir) if output_dir else config.benchmark.output_dir,
             max_attempts_per_task=config.benchmark.max_attempts_per_task,
             task_id=task_id if task_id is not None else config.benchmark.task_id,
+            generation_workers=(
+                _positive_int(generation_workers, "benchmark.generation_workers")
+                if generation_workers is not None
+                else config.benchmark.generation_workers
+            ),
             evaluation_workers=(
                 _positive_int(evaluation_workers, "benchmark.evaluation_workers")
                 if evaluation_workers is not None

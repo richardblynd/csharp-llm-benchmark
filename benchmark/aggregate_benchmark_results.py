@@ -30,6 +30,7 @@ class BenchmarkResult:
     model: str
     company: str
     quantization: str
+    kv_cache_quantization: str | None
     total_seconds: float | None
     total_tokens: int | None
     highest_token_task_id: str | None
@@ -160,6 +161,15 @@ def parse_summary(
         or ""
     )
 
+    kv_cache_quantization_raw = (
+        payload.get("kv_cache_quantization")
+        or llm_payload.get("kv_cache_quantization")
+    )
+    if kv_cache_quantization_raw is not None and str(kv_cache_quantization_raw).strip():
+        kv_cache_quantization: str | None = str(kv_cache_quantization_raw)
+    else:
+        kv_cache_quantization = None
+
     total_seconds = sum_optional_numbers(
         task.get("llm_response_time_seconds") for task in tasks
     )
@@ -218,6 +228,7 @@ def parse_summary(
         model=model,
         company=company,
         quantization=quantization,
+        kv_cache_quantization=kv_cache_quantization,
         total_seconds=total_seconds,
         total_tokens=total_tokens,
         highest_token_task_id=highest_token_task_id,
@@ -349,8 +360,8 @@ def render_markdown(
         f"- Results directory: `{results_dir}`",
         f"- Benchmark runs: `{len(benchmark_results)}`",
         "",
-        f"| Rank | Generator | Model | Company | Quantization | Total time | Total tokens | Max task tokens | Max token task | Tokens/s | Easy score | Medium score | Hard score | Final score{temperature_header_segment} |",
-        f"| ---: | --- | --- | --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---:{temperature_alignment_segment} |",
+        f"| Rank | Generator | Model | Company | Quantization | KV cache | Total time | Total tokens | Max task tokens | Max token task | Tokens/s | Easy score | Medium score | Hard score | Final score{temperature_header_segment} |",
+        f"| ---: | --- | --- | --- | --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---:{temperature_alignment_segment} |"
     ]
 
     for rank, result in enumerate(benchmark_results, start=1):
@@ -364,12 +375,13 @@ def render_markdown(
             else f" | {format_temperature(result.selected_temperature)}"
         )
         lines.append(
-            "| {rank} | {generator} | {model} | {company} | {quantization} | {total_time} | {total_tokens} | {highest_token_total} | {highest_token_task} | {tokens_per_second} | {easy_score} | {medium_score} | {hard_score} | {final_score}{temperature_values} |".format(
+            "| {rank} | {generator} | {model} | {company} | {quantization} | {kv_cache} | {total_time} | {total_tokens} | {highest_token_total} | {highest_token_task} | {tokens_per_second} | {easy_score} | {medium_score} | {hard_score} | {final_score}{temperature_values} |".format(
                 rank=rank,
                 generator=markdown_code(result.generator),
                 model=markdown_code(result.model),
                 company=markdown_code(result.company or "n/a"),
                 quantization=markdown_code(result.quantization or "n/a"),
+                kv_cache=markdown_code(result.kv_cache_quantization or "n/a"),
                 total_time=markdown_code(format_duration(result.total_seconds)),
                 total_tokens=format_int(result.total_tokens),
                 highest_token_total=format_int(result.highest_token_task_total_tokens),
@@ -405,6 +417,13 @@ def render_html(
     )
     quantizations = sorted(
         {result.quantization for result in benchmark_results if result.quantization}
+    )
+    kv_cache_quantizations = sorted(
+        {
+            str(result.kv_cache_quantization)
+            for result in benchmark_results
+            if result.kv_cache_quantization is not None
+        }
     )
     quantization_colors = build_tag_colors(
         sorted({result.quantization or "n/a" for result in benchmark_results})
@@ -1095,6 +1114,13 @@ def render_html(
           {render_options(quantizations)}
         </select>
       </label>
+      <label>
+        KV cache
+        <select id="kvCacheQuant">
+          <option value="">All KV caches</option>
+          {render_options(kv_cache_quantizations)}
+        </select>
+      </label>
       <label class="score-range">
         Final score range
         <span class="range-fields">
@@ -1139,6 +1165,7 @@ def render_html(
             <th rowspan="2" data-key="model" data-type="text">Model</th>
             <th rowspan="2" data-key="company" data-type="text">Company</th>
             <th rowspan="2" data-key="quantization" data-type="text" title="Quantization" aria-label="Quantization">Quant.</th>
+            <th rowspan="2" data-key="kvCacheQuant" data-type="text" title="KV cache quantization" aria-label="KV cache quantization">KV Q</th>
             <th class="numeric" rowspan="2" data-key="totalSeconds" data-type="number">Total time</th>
             <th id="token-group-heading" class="group-heading" colspan="1" rowspan="2" data-key="totalTokens" data-type="number">Total tokens</th>
             <th class="numeric" rowspan="2" data-key="tokensPerSecond" data-type="number">Tokens/s</th>
@@ -1193,6 +1220,7 @@ def render_html(
       generator: document.querySelector("#generator"),
       company: document.querySelector("#company"),
       quantization: document.querySelector("#quantization"),
+      kvCacheQuant: document.querySelector("#kvCacheQuant"),
     }};
     const scoreRange = {{
       minInput: document.querySelector("#min-score"),
@@ -1298,6 +1326,7 @@ def render_html(
           generator: filters.generator.value,
           company: filters.company.value,
           quantization: filters.quantization.value,
+          kvCacheQuant: filters.kvCacheQuant.value,
           minScore: scoreRange.minInput.value,
           maxScore: scoreRange.maxInput.value,
         }},
@@ -1326,6 +1355,7 @@ def render_html(
       filters.generator.value = selectHasValue(filters.generator, storedFilters.generator) ? storedFilters.generator : "";
       filters.company.value = selectHasValue(filters.company, storedFilters.company) ? storedFilters.company : "";
       filters.quantization.value = selectHasValue(filters.quantization, storedFilters.quantization) ? storedFilters.quantization : "";
+      filters.kvCacheQuant.value = selectHasValue(filters.kvCacheQuant, storedFilters.kvCacheQuant) ? storedFilters.kvCacheQuant : "";
       setScoreRange(
         clampScore(storedFilters.minScore, 0),
         clampScore(storedFilters.maxScore, 100),
@@ -1406,6 +1436,7 @@ def render_html(
       const generator = filters.generator.value;
       const company = filters.company.value;
       const quantization = filters.quantization.value;
+      const kvCacheQuant = filters.kvCacheQuant.value;
       const minScore = clampScore(scoreRange.minInput.value, 0);
       const maxScore = clampScore(scoreRange.maxInput.value, 100);
 
@@ -1419,6 +1450,9 @@ def render_html(
         return false;
       }}
       if (quantization && row.dataset.quantization !== quantization) {{
+        return false;
+      }}
+      if (kvCacheQuant && row.dataset.kvCacheQuant !== kvCacheQuant) {{
         return false;
       }}
       const finalScore = numberValue(row, "finalScore");
@@ -1786,6 +1820,7 @@ def render_html(
       filters.generator.value = "";
       filters.company.value = "";
       filters.quantization.value = "";
+      filters.kvCacheQuant.value = "";
       setScoreRange(0, 100);
       saveBrowserState();
       applyFilters();
@@ -1830,6 +1865,7 @@ def render_html_row(
             result.model,
             result.company,
             result.quantization,
+            result.kv_cache_quantization or "",
             result.highest_token_task_id or "",
             format_duration(result.total_seconds),
             format_int(result.total_tokens),
@@ -1853,6 +1889,7 @@ def render_html_row(
         f'data-model="{escape_attr(result.model)}" '
         f'data-company="{escape_attr(result.company)}" '
         f'data-quantization="{escape_attr(result.quantization)}" '
+        f'data-kv-cache-quant="{escape_attr(result.kv_cache_quantization or "")}" '
         f'data-total-seconds="{number_attr(result.total_seconds)}" '
         f'data-total-tokens="{number_attr(result.total_tokens)}" '
         f'data-highest-token-task-total-tokens="{number_attr(result.highest_token_task_total_tokens)}" '
@@ -1871,6 +1908,7 @@ def render_html_row(
         f'<td class="model"><button class="model-button" type="button" data-model-filter="{escape_attr(result.model)}">{escape_html(result.model)}</button></td>'
         f'<td>{escape_html(result.company or "n/a")}</td>'
         f"<td>{quantization_cell}</td>"
+        f'<td>{escape_html(result.kv_cache_quantization or "n/a")}</td>'
         f'<td class="numeric" data-extreme-key="totalSeconds">{escape_html(format_duration(result.total_seconds))}</td>'
         f'<td class="numeric" data-extreme-key="totalTokens">{escape_html(format_int(result.total_tokens))}</td>'
         f'<td class="numeric" data-extreme-key="highestTokenTaskTotalTokens" data-column-group="token" hidden>{escape_html(format_int(result.highest_token_task_total_tokens))}</td>'
