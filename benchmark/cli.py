@@ -476,6 +476,7 @@ def _run(args: argparse.Namespace) -> int:
         )
 
     discovery_runs: list[TemperatureRun] | None = None
+    reuse_scores: dict[str, TaskScore] | None = None  # task_id → TaskScore from discovery
     is_discovery = (
         config.llm.discovery.enabled
         and args.resume is None
@@ -536,9 +537,18 @@ def _run(args: argparse.Namespace) -> int:
         winning_temp = _select_best_temperature_run(discovery_runs).temperature
         full_config = with_llm_temperature(config, winning_temp)
         full_config = with_llm_temperatures(config, (winning_temp,))
+
+        # Reuse discovery scores so we don't re-generate / re-evaluate those tasks
+        reuse_scores = _build_discovery_reuse_map(
+            discovery_runs,
+            winning_temp,
+            run_dir / "discovery",
+        )
+        skipped_count = len(reuse_scores)
         phase_label = (
             f"Phase: Full Benchmark — temperature "
             f"{_format_temperature(winning_temp)}, {len(tasks)} tasks"
+            f" ({skipped_count} from discovery)"
         )
     else:
         full_config = config
@@ -551,6 +561,7 @@ def _run(args: argparse.Namespace) -> int:
         resume_from_index=resume_from_index,
         resume_task_id=args.resume,
         phase_label=phase_label,
+        reuse_scores=reuse_scores,
     )
 
     best_run = _select_best_temperature_run(temperature_runs)
@@ -604,6 +615,53 @@ def _run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _build_discovery_reuse_map(
+    discovery_runs: list[TemperatureRun],
+    winning_temp: float,
+    discovery_dir: Path,
+) -> dict[str, TaskScore]:
+    """Find the winning temperature's run and return {task_id: TaskScore} so the full
+    benchmark can skip re-generating / re-evaluating those tasks.
+
+    Also copies result.json from discovery → full-benchmark paths for every reused task.
+    """
+    winning_run = _select_best_temperature_run(discovery_runs)
+    # The winning run's scores are ordered by the discovery-task list, not the full list
+    score_by_task_id: dict[str, TaskScore] = {
+        ts.task_id: ts for ts in winning_run.task_scores if ts is not None
+    }
+
+    # Copy result.json from discovery artifact paths to where a resumed load would find them.
+    # Discovery may have stored artefacts under temperatures/temperature-X/tasks/<id>/
+    # or flat under tasks/<id>/.  We scan both layouts and copy the first match into
+    # <run_dir>/tasks/<id>/result.json so downstream tooling (resume, aggregate) sees them.
+    for task_id in score_by_task_id:
+        dest_result = discovery_dir / ".." / "tasks" / task_id / "result.json"
+        found_src: Path | None = None
+
+        # Try multi-temp layout first
+        temp_root = (
+            discovery_dir
+            / "temperatures"
+            / f"temperature-{_format_temperature(winning_temp)}"
+            / "tasks"
+            / task_id
+        )
+        if (temp_root / "result.json").exists():
+            found_src = temp_root
+        else:
+            # Flat layout (single-temp discovery)
+            flat_root = discovery_dir / "tasks" / task_id
+            if (flat_root / "result.json").exists():
+                found_src = flat_root
+
+        if found_src is not None:
+            dest_result.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(found_src / "result.json", dest_result)
+
+    return score_by_task_id
+
+
 def _is_single_task_id_targeting_non_discovery(
     tasks: list[Task], task_id: str | None
 ) -> bool:
@@ -621,6 +679,7 @@ def _run_task_major_temperatures(
     resume_from_index: int,
     resume_task_id: str | None,
     phase_label: str | None = None,
+    reuse_scores: dict[str, TaskScore] | None = None,
 ) -> list[TemperatureRun]:
     temperatures = config.llm.temperatures
     multi_temperature = len(temperatures) > 1
@@ -648,6 +707,20 @@ def _run_task_major_temperatures(
                 multi_temperature=multi_temperature,
             )
             task_dir = task_root_dir / "tasks" / task.id
+
+            # Reuse discovery score — skip generation + evaluation entirely
+            if reuse_scores and task.id in reuse_scores:
+                ds = reuse_scores[task.id]
+                task_scores_by_temperature[temperature_index][task_index] = ds
+                dashboard_rows[row_index].llm = f"{ds.llm_response_time_seconds:.2f}s"
+                dashboard_rows[row_index].tokens = _format_tokens(
+                    ds.llm_usage.total_tokens
+                )
+                dashboard_rows[row_index].evaluation = (
+                    "discovery (reused)"
+                )
+                continue
+
             result_path = task_dir / "result.json"
             if resume_task_id is not None and result_path.exists():
                 _load_existing_task_score(
