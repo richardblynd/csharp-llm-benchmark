@@ -8,6 +8,29 @@ from benchmark.simple_yaml import load_yaml
 
 DEFAULT_DIFFICULTY_ORDER = ("easy", "medium", "hard")
 
+# Fixed set of 7 tasks used for temperature discovery. Covers 6 skill categories:
+# basic parsing, generics/data structures, algorithms/graphs, Web API,
+# SOLID/OOP patterns, advanced APIs with concurrency, and composition design.
+DISCOVERY_TASK_IDS = (
+    "easy-003",
+    "easy-008",
+    "medium-006",
+    "medium-012",
+    "medium-015",
+    "hard-007",
+    "hard-013",
+)
+
+DISCOVERY_TASK_DESCRIPTIONS = {
+    "easy-003": ("Basic", "Parsing + dictionary + string manipulation"),
+    "easy-008": ("Generics/Type", "Generic data structure with internal state"),
+    "medium-006": ("Algorithm/Graph", "Topological sort + cycle detection"),
+    "medium-012": ("Web API", "ASP.NET Core + interval conflict detection"),
+    "medium-015": ("SOLID/OOP", "Strategy pattern + composition by interface"),
+    "hard-007": ("Advanced Web API", "Idempotency + thread safety"),
+    "hard-013": ("Advanced Design", "Composable generic expression trees"),
+}
+
 
 @dataclass(frozen=True)
 class ScoreConfig:
@@ -115,6 +138,31 @@ def validate_tasks(tasks: list[Task]) -> list[str]:
         if task.score.available_points <= 0:
             errors.append(f"{task.id}: score must be positive")
     return errors
+
+
+def select_discovery_tasks(tasks: list[Task]) -> list[Task]:
+    """Select the fixed set of discovery tasks from the loaded task list.
+
+    Raises RuntimeError if any expected discovery task is missing.
+    Preserves the order defined in DISCOVERY_TASK_IDS (easy → medium → hard).
+    """
+    task_by_id = {task.id: task for task in tasks}
+    selected: list[Task] = []
+    missing: list[str] = []
+
+    for expected_id in DISCOVERY_TASK_IDS:
+        if expected_id in task_by_id:
+            selected.append(task_by_id[expected_id])
+        else:
+            missing.append(expected_id)
+
+    if missing:
+        available_ids = ", ".join(task.id for task in tasks)
+        raise RuntimeError(
+            f"Discovery tasks not found: {', '.join(missing)}. "
+            f"Available ids: {available_ids}"
+        )
+    return selected
 
 
 def _load_task(task_dir: Path, data: dict[str, Any]) -> Task:

@@ -32,6 +32,7 @@ def write_summary(
     score: BenchmarkScore,
     task_scores: list[TaskScore],
     temperature_scores: list[Any] | None = None,
+    discovery_runs: list[Any] | None = None,
 ) -> None:
     generated_at = datetime.now(timezone.utc).isoformat()
     total_llm_time = sum(
@@ -111,6 +112,9 @@ def write_summary(
             "available_points": score.available_points,
             "final_score": score.final_score,
         },
+        "discovery": (
+            _discovery_payload(discovery_runs) if discovery_runs else None
+        ),
         "selected_temperature": config.llm.temperature,
         "temperature_scores": _temperature_scores_payload(temperature_scores),
         "llm_response_time": {
@@ -144,6 +148,44 @@ def write_summary(
         _render_markdown(payload),
         encoding="utf-8",
     )
+
+
+def _discovery_payload(
+    discovery_runs: list[Any],
+) -> dict[str, Any]:
+    """Build the discovery section for summary.json."""
+    from benchmark.tasks import DISCOVERY_TASK_IDS
+
+    temperature_scores = []
+    selected_temp = discovery_runs[0].temperature if discovery_runs else None
+
+    # Find winning temp (highest earned_points; tie-break: lowest index/temp)
+    best_index = 0
+    for idx, run in enumerate(discovery_runs):
+        if (
+            run.score.earned_points >
+            discovery_runs[best_index].score.earned_points
+        ):
+            best_index = idx
+    selected_temp = discovery_runs[best_index].temperature
+
+    for run in discovery_runs:
+        temperature_scores.append(
+            {
+                "temperature": run.temperature,
+                "final_score": run.score.final_score,
+                "earned_points": run.score.earned_points,
+                "available_points": run.score.available_points,
+            }
+        )
+
+    return {
+        "enabled": True,
+        "sample_task_ids": list(DISCOVERY_TASK_IDS),
+        "temperatures_tested": [run.temperature for run in discovery_runs],
+        "temperature_scores": temperature_scores,
+        "selected_temperature": selected_temp,
+    }
 
 
 def _temperature_scores_payload(temperature_scores: list[Any] | None) -> list[dict[str, Any]]:
@@ -234,6 +276,7 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         f"- Reasoning tokens: `{_format_tokens(payload['llm_token_usage']['reasoning_tokens'])}`",
         _format_highest_token_task(payload["highest_token_task"]),
         "",
+        *_render_discovery_section(payload.get("discovery")),
         *_render_temperature_table(payload["temperature_scores"]),
         "| Task | Status | Temperature | Points | Passed | Failed | LLM time | Tokens |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
@@ -254,6 +297,52 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         )
     lines.append("")
     return "\n".join(lines)
+
+
+def _render_discovery_section(discovery: dict[str, Any] | None) -> list[str]:
+    """Render the discovery results section in summary.md."""
+    if not discovery:
+        return []
+
+    task_ids = discovery.get("sample_task_ids", [])
+    temp_scores = discovery.get("temperature_scores", [])
+    selected_temp = discovery.get("selected_temperature")
+    n_temps = len(temp_scores)
+
+    lines: list[str] = [
+        f"## Discovery Results ({len(task_ids)} tasks × {n_temps} temperatures)",
+        "",
+        f"Tasks sampled: {', '.join(str(t) for t in task_ids)}",
+        "",
+        "| Temperature | Final score | Points |",
+        "| ---: | ---: | ---: |",
+    ]
+
+    for ts in temp_scores:
+        temp = _format_temperature(ts["temperature"])
+        final_score = ts["final_score"]
+        earned = ts["earned_points"]
+        available = ts["available_points"]
+        marker = ""
+        if selected_temp is not None and abs(
+            float(ts["temperature"]) - float(selected_temp)
+        ) < 1e-9:
+            temp = f"**{temp}**"
+            final_score = f"**{final_score}**"
+            marker = " ← winner"
+
+        lines.append(
+            f"| {temp} | {final_score} | {earned} / {available}{marker} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            f"Selected temperature: `{_format_temperature(selected_temp)}`",
+            "",
+        ]
+    )
+    return lines
 
 
 def _render_temperature_table(temperature_scores: list[dict[str, Any]]) -> list[str]:

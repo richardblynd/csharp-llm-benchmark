@@ -9,7 +9,13 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from benchmark.config import apply_cli_overrides, load_config, with_llm_temperature
+from benchmark.config import (
+    apply_cli_overrides,
+    get_effective_discovery_temperatures,
+    load_config,
+    with_llm_temperature,
+    with_llm_temperatures,
+)
 from benchmark.generation import (
     GeneratedSolution,
     OpenCodeGenerator,
@@ -27,7 +33,7 @@ from benchmark.report import (
 )
 from benchmark.runner import DockerRunner, TaskRunResult, write_result_json
 from benchmark.scorer import BenchmarkScore, TaskScore, score_benchmark, score_task
-from benchmark.tasks import Task, load_tasks, validate_tasks
+from benchmark.tasks import DISCOVERY_TASK_IDS, Task, load_tasks, select_discovery_tasks, validate_tasks
 
 
 RUNNING_ICON = "⏳"
@@ -82,6 +88,7 @@ class DashboardRow:
 class DashboardRenderer:
     rows: list[DashboardRow]
     header_lines: list[str]
+    phase_label: str | None = None
     lines_rendered: int = 0
     rendered_once: bool = False
     can_redraw: bool = field(default_factory=lambda: sys.stdout.isatty())
@@ -103,7 +110,10 @@ class DashboardRenderer:
 
     def _render_lines(self) -> list[str]:
         terminal_width = shutil.get_terminal_size(fallback=(120, 24)).columns
-        return [*self.header_lines, "", "Tasks:", *_render_dashboard_table(
+        lines: list[str] = [*self.header_lines]
+        if self.phase_label:
+            lines.append(self.phase_label)
+        return ["", *lines, "", "Tasks:", *_render_dashboard_table(
             self.rows,
             terminal_width=terminal_width,
         )]
@@ -382,6 +392,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "generated."
         ),
     )
+    run.add_argument(
+        "--discovery-enabled",
+        choices=("true", "false"),
+        default=None,
+        help=(
+            "Override llm.discovery.enabled from config. 'true' enables the "
+            "temperature discovery phase; 'false' skips it (behaves like legacy "
+            "multi-temperature mode)."
+        ),
+    )
 
     return parser
 
@@ -404,6 +424,11 @@ def _validate(args: argparse.Namespace) -> int:
 
 
 def _run(args: argparse.Namespace) -> int:
+    discovery_enabled_override = (
+        args.discovery_enabled == "true"
+        if args.discovery_enabled is not None
+        else None
+    )
     config = apply_cli_overrides(
         load_config(args.config),
         base_url=args.base_url,
@@ -423,6 +448,7 @@ def _run(args: argparse.Namespace) -> int:
         min_p=args.min_p,
         top_k=args.top_k,
         repetition_penalty=args.repetition_penalty,
+        discovery_enabled=discovery_enabled_override,
     )
     if args.resume is None and args.resume_dir is not None:
         raise ValueError("--resume-dir requires --resume")
@@ -449,23 +475,99 @@ def _run(args: argparse.Namespace) -> int:
             quantization=config.llm.quantization,
         )
 
+    discovery_runs: list[TemperatureRun] | None = None
+    is_discovery = (
+        config.llm.discovery.enabled
+        and args.resume is None
+        and len(config.llm.temperatures) > 1
+        and not _is_single_task_id_targeting_non_discovery(
+            tasks, config.benchmark.task_id
+        )
+    )
+
+    if is_discovery:
+        discovery_temps = get_effective_discovery_temperatures(config)
+        discovery_config = with_llm_temperature(
+            config,
+            discovery_temps[0],
+        )
+        # Override temperatures for discovery phase
+        discovery_config = with_llm_temperatures(config, discovery_temps)
+
+        try:
+            discovery_tasks = select_discovery_tasks(tasks)
+        except RuntimeError as exc:
+            print(f"Skipping discovery: {exc}", file=sys.stderr)
+            is_discovery = False
+        else:
+            n_disc = len(discovery_tasks)
+            n_templs = len(discovery_temps)
+            phase_label = (
+                f"Phase: Discovery — {n_disc} tasks, "
+                f"{n_templs} temperatures"
+            )
+
+            discovery_runs = _run_task_major_temperatures(
+                discovery_config,
+                discovery_tasks,
+                run_dir=run_dir / "discovery",
+                resume_from_index=0,
+                resume_task_id=None,
+                phase_label=phase_label,
+            )
+
+            best_discovery_run = _select_best_temperature_run(discovery_runs)
+            winning_temp = best_discovery_run.temperature
+
+            print()
+            print("Discovery results:")
+            for dr in discovery_runs:
+                marker = " ← winner" if dr.temperature == winning_temp else ""
+                print(
+                    f"  {_format_temperature(dr.temperature)}: "
+                    f"{dr.score.final_score} "
+                    f"({dr.score.earned_points:g}/"
+                    f"{dr.score.available_points:g}){marker}"
+                )
+            print(f"Selected temperature: {_format_temperature(winning_temp)}")
+
+    # Phase 2 — Full benchmark with winning (or default) temperature
+    if is_discovery and discovery_runs:
+        winning_temp = _select_best_temperature_run(discovery_runs).temperature
+        full_config = with_llm_temperature(config, winning_temp)
+        full_config = with_llm_temperatures(config, (winning_temp,))
+        phase_label = (
+            f"Phase: Full Benchmark — temperature "
+            f"{_format_temperature(winning_temp)}, {len(tasks)} tasks"
+        )
+    else:
+        full_config = config
+        phase_label = None
+
     temperature_runs = _run_task_major_temperatures(
-        config,
+        full_config,
         tasks,
         run_dir=run_dir,
         resume_from_index=resume_from_index,
         resume_task_id=args.resume,
+        phase_label=phase_label,
     )
 
     best_run = _select_best_temperature_run(temperature_runs)
-    best_config = with_llm_temperature(config, best_run.temperature)
+    best_config = with_llm_temperature(full_config, best_run.temperature)
     write_summary(
         run_dir,
         config=best_config,
         score=best_run.score,
         task_scores=best_run.task_scores,
         temperature_scores=temperature_runs,
+        discovery_runs=discovery_runs,
     )
+
+    if is_discovery and discovery_runs:
+        print()
+        winning_temp = _select_best_temperature_run(discovery_runs).temperature
+        print(f"Discovery selected: {_format_temperature(winning_temp)}")
     print(f"Best temperature: {_format_temperature(best_run.temperature)}")
     print(
         f"Final score: {best_run.score.final_score} "
@@ -502,6 +604,15 @@ def _run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _is_single_task_id_targeting_non_discovery(
+    tasks: list[Task], task_id: str | None
+) -> bool:
+    """If --task-id is set and the target is NOT a discovery task, skip discovery."""
+    if task_id is None:
+        return False
+    return task_id not in DISCOVERY_TASK_IDS
+
+
 def _run_task_major_temperatures(
     config,
     tasks: list[Task],
@@ -509,6 +620,7 @@ def _run_task_major_temperatures(
     run_dir: Path,
     resume_from_index: int,
     resume_task_id: str | None,
+    phase_label: str | None = None,
 ) -> list[TemperatureRun]:
     temperatures = config.llm.temperatures
     multi_temperature = len(temperatures) > 1
@@ -604,8 +716,9 @@ def _run_task_major_temperatures(
             ]
         )
     dashboard = DashboardRenderer(
-        dashboard_rows,
+        rows=dashboard_rows,
         header_lines=header_lines,
+        phase_label=phase_label,
     )
     if _can_prepare_opencode_ahead(config, solution_generators):
         _run_prepared_opencode_queue(

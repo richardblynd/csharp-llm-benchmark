@@ -8,7 +8,13 @@ from typing import Any
 from benchmark.simple_yaml import load_yaml
 
 
-DEFAULT_TEMPERATURES = (0.2, 0.40, 0.60)
+DEFAULT_TEMPERATURES = (0.2, 0.40, 0.60, 0.80)
+
+
+@dataclass(frozen=True)
+class DiscoveryConfig:
+    enabled: bool = True
+    temperatures: tuple[float, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -29,6 +35,7 @@ class LlmConfig:
     seed: int = 42
     timeout_seconds: int = 120
     requests_per_minute: int | None = None
+    discovery: DiscoveryConfig = field(default_factory=DiscoveryConfig)
 
     @property
     def effective_model_label(self) -> str:
@@ -115,6 +122,10 @@ def load_config(path: Path | None) -> AppConfig:
     company = _optional_string(llm_data.get("company"))
     temperatures = _temperature_tuple(llm_data)
 
+    discovery_data = llm_data.get("discovery", {})
+    if not isinstance(discovery_data, dict):
+        raise ValueError("llm.discovery must be a mapping when set")
+
     config = AppConfig(
         llm=LlmConfig(
             base_url=str(llm_data.get("base_url", LlmConfig.base_url)).rstrip("/"),
@@ -139,7 +150,7 @@ def load_config(path: Path | None) -> AppConfig:
                 llm_data.get("min_p"),
                 "llm.min_p",
             ),
-            top_k=_optional_positive_int(
+            top_k=_optional_non_negative_int(
                 llm_data.get("top_k"),
                 "llm.top_k",
             ),
@@ -154,6 +165,13 @@ def load_config(path: Path | None) -> AppConfig:
             requests_per_minute=_optional_positive_int(
                 llm_data.get("requests_per_minute"),
                 "llm.requests_per_minute",
+            ),
+            discovery=DiscoveryConfig(
+                enabled=_bool_value(
+                    discovery_data.get("enabled", DiscoveryConfig.enabled),
+                    "llm.discovery.enabled",
+                ),
+                temperatures=_optional_temperature_tuple(discovery_data),
             ),
         ),
         benchmark=BenchmarkConfig(
@@ -322,6 +340,7 @@ def apply_cli_overrides(
     min_p: float | None = None,
     top_k: int | None = None,
     repetition_penalty: float | None = None,
+    discovery_enabled: bool | None = None,
 ) -> AppConfig:
     updated = AppConfig(
         llm=LlmConfig(
@@ -353,7 +372,7 @@ def apply_cli_overrides(
                 else config.llm.min_p
             ),
             top_k=(
-                _positive_int(top_k, "llm.top_k")
+                _non_negative_int(top_k, "llm.top_k")
                 if top_k is not None
                 else config.llm.top_k
             ),
@@ -365,6 +384,14 @@ def apply_cli_overrides(
             seed=config.llm.seed,
             timeout_seconds=config.llm.timeout_seconds,
             requests_per_minute=config.llm.requests_per_minute,
+            discovery=DiscoveryConfig(
+                enabled=(
+                    bool(discovery_enabled)
+                    if discovery_enabled is not None
+                    else config.llm.discovery.enabled
+                ),
+                temperatures=config.llm.discovery.temperatures,
+            ),
         ),
         benchmark=BenchmarkConfig(
             difficulty=(
@@ -433,6 +460,17 @@ def with_llm_temperature(config: AppConfig, temperature: float) -> AppConfig:
     return replace(config, llm=replace(config.llm, temperature=temperature))
 
 
+def with_llm_temperatures(
+    config: AppConfig,
+    temperatures: tuple[float, ...],
+) -> AppConfig:
+    """Replace the full set of configured temperatures."""
+    return replace(
+        config,
+        llm=replace(config.llm, temperature=temperatures[0], temperatures=temperatures),
+    )
+
+
 def _temperature_tuple(llm_data: dict[str, Any]) -> tuple[float, ...]:
     temperatures_value = llm_data.get("temperatures")
     if temperatures_value is not None:
@@ -447,6 +485,31 @@ def _temperature_tuple(llm_data: dict[str, Any]) -> tuple[float, ...]:
     if not temperatures:
         raise ValueError("llm.temperatures must contain at least one temperature")
     return temperatures
+
+
+def _optional_temperature_tuple(data: dict[str, Any]) -> tuple[float, ...] | None:
+    """Parse an optional discovery.temperatures list. Returns None if not set."""
+    temperatures_value = data.get("temperatures")
+    if temperatures_value is None:
+        return None
+    if not isinstance(temperatures_value, list):
+        raise ValueError("llm.discovery.temperatures must be a list of numbers")
+    temperatures = tuple(float(value) for value in temperatures_value)
+    if not temperatures:
+        raise ValueError(
+            "llm.discovery.temperatures must contain at least one temperature"
+        )
+    return temperatures
+
+
+def get_effective_discovery_temperatures(config: AppConfig) -> tuple[float, ...]:
+    """Return the temperatures to use for discovery.
+
+    Priority: discovery.temperatures > llm.temperatures.
+    """
+    if config.llm.discovery.temperatures is not None:
+        return config.llm.discovery.temperatures
+    return config.llm.temperatures
 
 
 def _optional_string(value: Any) -> str | None:
@@ -500,6 +563,16 @@ def _optional_positive_int(value: Any, name: str) -> int | None:
         return None
     if number < 0:
         raise ValueError(f"{name} must be at least 1 when set")
+    return number
+
+
+def _optional_non_negative_int(value: Any, name: str) -> int | None:
+    """Parse an optional int that may be zero (e.g. top_k=0 means \"disable top-k\")."""
+    if value is None:
+        return None
+    number = int(value)
+    if number < 0:
+        raise ValueError(f"{name} must be 0 or greater")
     return number
 
 

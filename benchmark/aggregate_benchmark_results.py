@@ -39,6 +39,7 @@ class BenchmarkResult:
     difficulty_scores: dict[str, float | None]
     selected_temperature: float | None
     temperature_scores: dict[str, float | None]
+    uses_discovery: bool
     final_score: float | None
     earned_points: float | None
     available_points: float | None
@@ -216,7 +217,7 @@ def parse_summary(
     selected_temperature = optional_float(
         payload.get("selected_temperature", llm_payload.get("temperature"))
     )
-    temperature_scores = parse_temperature_scores(payload)
+    discovery_info, temperature_scores = parse_temperature_scores(payload)
 
     tokens_per_second = None
     if total_tokens is not None and total_seconds is not None and total_seconds > 0:
@@ -237,31 +238,69 @@ def parse_summary(
         difficulty_scores=difficulty_scores,
         selected_temperature=selected_temperature,
         temperature_scores=temperature_scores,
+        uses_discovery=discovery_info.get("enabled", False),
         final_score=final_score,
         earned_points=earned_points,
         available_points=available_points,
     )
 
 
-def parse_temperature_scores(payload: dict[str, Any]) -> dict[str, float | None]:
-    scores: dict[str, float | None] = {}
-    raw_scores = payload.get("temperature_scores")
-    if not isinstance(raw_scores, list):
-        return scores
+def parse_temperature_scores(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, float | None]]:
+    """Parse temperature scores from either discovery or legacy format.
 
-    for entry in raw_scores:
+    Returns (discovery_info, temperature_scores_dict).
+    Discovery info contains {"enabled": bool} to signal which source was used.
+    """
+    scores: dict[str, float | None] = {}
+    discovery_info: dict[str, Any] = {"enabled": False}
+
+    # Prefer discovery.temperature_scores when available (new format)
+    discovery_data = payload.get("discovery")
+    if isinstance(discovery_data, dict):
+        disc_enabled = discovery_data.get("enabled", False)
+        disc_temp_scores = discovery_data.get("temperature_scores")
+        if disc_enabled and isinstance(disc_temp_scores, list) and disc_temp_scores:
+            scores = _extract_temperature_score_map(disc_temp_scores)
+            discovery_info["enabled"] = True
+            return discovery_info, scores
+
+    # Fallback to legacy top-level temperature_scores (old multi-temp format)
+    raw_scores = payload.get("temperature_scores")
+    if isinstance(raw_scores, list) and raw_scores:
+        scores = _extract_temperature_score_map(raw_scores)
+
+    return discovery_info, scores
+
+
+def _extract_temperature_score_map(
+    entries: list[dict[str, Any]],
+) -> dict[str, float | None]:
+    """Extract {temp_label: final_score} from a list of temperature score entries.
+
+    Handles both formats:
+    - Discovery format: entry has flat `final_score` key
+    - Legacy format: entry has nested `score.final_score`
+    """
+    scores: dict[str, float | None] = {}
+    for entry in entries:
         if not isinstance(entry, dict):
             continue
         temperature = optional_float(entry.get("temperature"))
         if temperature is None:
             continue
-        score = entry.get("score")
-        final_score = (
-            optional_float(score.get("final_score"))
-            if isinstance(score, dict)
-            else None
-        )
-        scores[format_temperature_label(temperature)] = final_score
+        # Discovery format: flat final_score
+        score_value = optional_float(entry.get("final_score"))
+        if score_value is None:
+            # Legacy format: nested score.final_score
+            score_obj = entry.get("score")
+            score_value = (
+                optional_float(score_obj.get("final_score"))
+                if isinstance(score_obj, dict)
+                else None
+            )
+        scores[format_temperature_label(temperature)] = score_value
     return scores
 
 
@@ -1145,7 +1184,7 @@ def render_html(
         <input id="show-score-columns" type="checkbox">
         Show Easy/Medium/Hard scores
       </label>
-      <label class="check-option">
+      <label class="check-option" title="Displays the per-temperature scores from full benchmark runs, or the per-temperature scores from the discovery round when discovery mode was used.">
         <input id="show-temperature-columns" type="checkbox">
         Show temperature scores
       </label>

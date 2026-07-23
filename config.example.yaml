@@ -11,6 +11,17 @@ llm:
     - 0.2
     - 0.4
     - 0.6
+  # Temperature discovery: run a small sample of tasks (7 fixed) at N candidate
+  # temperatures, select the winner, then run the full benchmark only at that
+  # temperature. Skips when disabled or when --task-id targets a single task.
+  discovery:
+    enabled: true
+    # Candidate temperatures for discovery. If omitted, falls back to llm.temperatures.
+    # temperatures:
+    #   - 0.2
+    #   - 0.4
+    #   - 0.6
+    #   - 0.8
   # Optional sampling parameters. Omit or leave commented to let the provider
   # (for example LM Studio) use its own defaults.
   top_p: 0.95

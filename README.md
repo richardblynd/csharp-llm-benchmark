@@ -97,25 +97,66 @@ once:
 python -m benchmark.cli run --config config.yaml --evaluation-workers 2
 ```
 
-By default, each selected task is generated and evaluated once for each
-configured LLM temperature: `0.2`, `0.4` and `0.6`. The runner uses task-major
-order, so it runs task 1 at every configured temperature before moving to task
-2. The final benchmark score is the score from the temperature that earned the
-most points. The summary also records the score for every configured
-temperature.
+By default the runner uses **temperature discovery** mode: it first probes a
+small fixed sample of 7 tasks across multiple candidate temperatures (`0.2`,
+`0.4`, `0.6`, `0.8`) and then runs the full benchmark **only at the winning
+temperature**. This saves time compared to running every task at every
+temperature while still finding the temperature that scores best for a given
+model.
+
+The two-phase flow works as follows:
+
+1. **Discovery** — 7 tasks (covering basic parsing, generics, algorithms,
+   Web APIs, SOLID/OOP, advanced concurrency, and composition design) are run
+   at each candidate temperature. The temperature with the highest earned points
+   wins; ties break in favour of the lowest value.
+2. **Full benchmark** — all selected tasks are run at the winning temperature
+   only. This score becomes the final result.
+
+The summary reports include a "Discovery Results" section (in `summary.md`)
+and a `discovery` key (`summary.json`) showing per-temperature scores from the
+probe round alongside the full benchmark results.
+
+To **disable** discovery and revert to the legacy multi-temperature behaviour
+(every task at every temperature), set `llm.discovery.enabled: false` in your
+YAML or pass `--discovery-enabled false` on the CLI:
+
+```bash
+python -m benchmark.cli run --config config.yaml --discovery-enabled false
+```
+
+When discovery is enabled and `--task-id` targets a **non-discovery task**,
+discovery is skipped automatically so you can test individual tasks directly.
+The `--resume` flow detects whether a previous run already completed the
+discovery phase and reuses the winning temperature when available.
+
+Reports are written under `results/<timestamp>_<modelLabel>_<quantization>/`.
+With discovery enabled, per-task artifacts from the probe round live under
+`discovery/tasks/`, and the full-benchmark output sits at the top level:
+```
+results/<run-dir>/
+├── discovery/
+│   └── tasks/
+│       ├── easy-003/result.json
+│       └── ...
+├── tasks/                    # full benchmark (winning temperature)
+│   ├── easy-001/result.json
+│   └── ...
+├── summary.json              # includes "discovery" section
+└── summary.md                # includes "Discovery Results" table
+```
+
+For legacy multi-temperature runs (discovery disabled), per-task artifacts are
+grouped under `temperatures/temperature-<value>/tasks/<task-id>/`, and the
+top-level `summary.json`/`summary.md` promotes the best temperature as the final
+result. When resuming a multi-temperature run, the runner reuses every existing
+`result.json` for each task/temperature pair and queues only missing pairs from
+the requested resume task onward. Tasks before the resume task must already have
+results for all configured temperatures.
 
 The direct LLM and OpenCode generators omit optional sampling parameters unless
 they are configured in YAML or passed on the command line. When omitted, the
 provider, for example LM Studio, applies its own defaults.
-
-Reports are written under `results/<timestamp>_<modelLabel>_<quantization>/`.
-For multi-temperature runs, per-task artifacts are grouped under
-`temperatures/temperature-<value>/tasks/<task-id>/`, and the top-level
-`summary.json`/`summary.md` promotes the best temperature as the final result.
-When resuming a multi-temperature run, the runner reuses every existing
-`result.json` for each task/temperature pair and queues only missing pairs from
-the requested resume task onward. Tasks before the resume task must already have
-results for all configured temperatures.
 
 ## OpenCode generator
 
@@ -263,7 +304,7 @@ llm:
 ```
 
 Configure benchmark temperatures in `config.yaml` under `llm.temperatures`.
-Omit the field to use the default `0.2`, `0.4` and `0.6` sweep. The legacy
+Omit the field to use the default `0.2`, `0.4`, `0.6`, `0.8` sweep. The legacy
 single-value `llm.temperature` field is still accepted for one-temperature
 runs:
 
@@ -274,6 +315,25 @@ llm:
     - 0.4
     - 0.6
 ```
+
+When discovery mode is enabled (the default), the probe phase uses its own
+candidate list from `llm.discovery.temperatures` if set, falling back to
+`llm.temperatures`. To use a different set of temperatures only for the
+discovery round:
+
+```yaml
+llm:
+  discovery:
+    enabled: true
+    temperatures:
+      - 0.2
+      - 0.4
+      - 0.6
+      - 0.8
+```
+
+You can also override the discovery toggle from the CLI with
+`--discovery-enabled true|false`.
 
 Optional sampling parameters are sent for both direct LLM runs and OpenCode runs
 only when configured in the `llm` section:
