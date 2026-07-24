@@ -2,7 +2,7 @@ id: "hard-011"
 name: "Transactional In-Memory Unit Of Work"
 difficulty: "hard"
 score:
-  compile: 2
+  compile: 3
   tests:
     persists_entities_after_commit: 3
     discards_changes_after_rollback: 4

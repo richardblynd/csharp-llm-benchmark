@@ -44,3 +44,19 @@ public sealed class BackpressuredEtlPipeline<TInput, TOutput>
         throw new NotImplementedException();
     }
 }
+
+public sealed class ResilientTransformer<TInput, TOutput> : IAsyncRecordTransformer<TInput, TOutput>
+{
+    private readonly IAsyncRecordTransformer<TInput, TOutput> _inner;
+    private readonly int _maxAttempts;
+
+    public ResilientTransformer(IAsyncRecordTransformer<TInput, TOutput> inner, int maxAttempts)
+    {
+        throw new NotImplementedException();
+    }
+
+    public ValueTask<TOutput> TransformAsync(TInput item, CancellationToken cancellationToken = default)
+    {
+        throw new NotImplementedException();
+    }
+}

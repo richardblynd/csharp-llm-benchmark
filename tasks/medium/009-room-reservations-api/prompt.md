@@ -1,0 +1,27 @@
+Create the generated file `Controllers/ReservationsController.cs` for an ASP.NET Core API.
+
+Required public surface:
+- A controller for reservations.
+- A public `ReservationStore` service registered by the template.
+- A public `ReservationDto` model or record with `Id`, `RoomId`, `Start` and `End`.
+
+Routes:
+- `POST /reservations` creates a reservation.
+- `GET /rooms/{roomId}/reservations` lists reservations for one room.
+
+Suggested shape:
+
+```csharp
+public sealed record ReservationDto(string Id, string RoomId, DateTime Start, DateTime End);
+```
+
+Rules:
+- All code, public identifiers, exception messages and comments must be written in English.
+- Reservation JSON fields are `id`, `roomId`, `start` and `end`.
+- Reject blank ids or room ids with `400`.
+- Reject intervals where `end <= start` (zero-duration or invalid) with `400`.
+- Reject overlapping reservations in the same room with `409`. Two intervals overlap when one starts before the other ends and vice versa.
+- Adjacent reservations are allowed: an event ending at 10:00 and another starting at 10:00 do not conflict.
+- The same time range is allowed in different rooms (counters are isolated by room).
+- Room reservation lists must be sorted by `start`, then by `id` ordinally.
+- Keep data in memory for the lifetime of the app instance.

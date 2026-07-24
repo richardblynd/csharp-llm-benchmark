@@ -1,16 +1,13 @@
-id: "hard-005"
-name: "Priority Job Scheduler With Dependencies"
-difficulty: "hard"
+id: "medium-011"
+name: "SRP Reporting Responsibilities"
+difficulty: "medium"
 score:
-  compile: 3
+  compile: 2
   tests:
-    runs_ready_jobs_by_priority: 4
-    waits_for_successful_dependencies: 5
-    enforces_max_parallelism: 5
-    retries_failed_jobs_to_configured_limit: 4
-    skips_dependents_after_failed_dependency: 4
-    honors_cancellation: 4
-    detects_dependency_cycles_before_running: 2
+    calculates_report_data_correctly: 3
+    formats_output_without_mixing_calculation: 3
+    isolates_output_destination_with_contract: 3
+    allows_each_responsibility_to_be_tested_separately: 3
 language: "csharp"
 dotnet_version: "8"
 project_type: "classlib"

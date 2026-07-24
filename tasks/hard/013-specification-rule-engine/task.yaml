@@ -2,7 +2,7 @@ id: "hard-013"
 name: "Specification Rule Engine"
 difficulty: "hard"
 score:
-  compile: 2
+  compile: 3
   tests:
     evaluates_simple_expression_specifications: 3
     combines_rules_with_and_or_not: 5

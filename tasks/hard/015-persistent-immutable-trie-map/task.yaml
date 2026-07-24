@@ -2,7 +2,7 @@ id: "hard-015"
 name: "Persistent Immutable Trie Map"
 difficulty: "hard"
 score:
-  compile: 2
+  compile: 3
   tests:
     inserts_and_finds_simple_keys: 3
     removes_key_without_affecting_others: 4

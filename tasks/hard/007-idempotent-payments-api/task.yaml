@@ -2,7 +2,7 @@ id: "hard-007"
 name: "Idempotent Payments API"
 difficulty: "hard"
 score:
-  compile: 2
+  compile: 3
   tests:
     creates_valid_payment_with_created_response: 3
     rejects_invalid_payload_with_bad_request: 3

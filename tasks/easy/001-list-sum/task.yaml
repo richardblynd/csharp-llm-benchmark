@@ -1,12 +1,15 @@
 id: "easy-001"
-name: "List Sum"
+name: "List Operations"
 difficulty: "easy"
 score:
   compile: 1
   tests:
-    sums_positive_numbers: 1
+    returns_sum_of_all_numbers: 2
     sums_negative_numbers: 1
-    returns_zero_for_empty_list: 1
+    keeps_only_even_numbers: 2
+    preserves_original_order_in_evens: 1
+    treats_zero_as_even: 1
+    returns_zero_and_empty_for_empty_list: 1
 language: "csharp"
 dotnet_version: "8"
 project_type: "classlib"

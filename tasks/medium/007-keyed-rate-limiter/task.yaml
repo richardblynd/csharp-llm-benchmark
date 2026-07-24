@@ -1,16 +1,14 @@
-id: "hard-005"
-name: "Priority Job Scheduler With Dependencies"
-difficulty: "hard"
+id: "medium-007"
+name: "In-Memory Keyed Rate Limiter"
+difficulty: "medium"
 score:
-  compile: 3
+  compile: 2
   tests:
-    runs_ready_jobs_by_priority: 4
-    waits_for_successful_dependencies: 5
-    enforces_max_parallelism: 5
-    retries_failed_jobs_to_configured_limit: 4
-    skips_dependents_after_failed_dependency: 4
-    honors_cancellation: 4
-    detects_dependency_cycles_before_running: 2
+    allows_requests_below_limit: 2
+    blocks_requests_above_limit: 4
+    isolates_counters_by_key: 3
+    resets_after_window_advances: 3
+    is_safe_under_concurrency: 2
 language: "csharp"
 dotnet_version: "8"
 project_type: "classlib"

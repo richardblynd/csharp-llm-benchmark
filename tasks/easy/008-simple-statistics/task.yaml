@@ -1,16 +1,13 @@
-id: "hard-005"
-name: "Priority Job Scheduler With Dependencies"
-difficulty: "hard"
+id: "easy-008"
+name: "Simple Statistics"
+difficulty: "easy"
 score:
-  compile: 3
+  compile: 1
   tests:
-    runs_ready_jobs_by_priority: 4
-    waits_for_successful_dependencies: 5
-    enforces_max_parallelism: 5
-    retries_failed_jobs_to_configured_limit: 4
-    skips_dependents_after_failed_dependency: 4
-    honors_cancellation: 4
-    detects_dependency_cycles_before_running: 2
+    returns_count_average_min_and_max: 3
+    handles_single_value: 2
+    handles_negative_values: 2
+    returns_zeroes_for_empty_input: 2
 language: "csharp"
 dotnet_version: "8"
 project_type: "classlib"

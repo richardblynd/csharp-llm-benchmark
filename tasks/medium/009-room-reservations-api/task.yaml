@@ -1,20 +1,18 @@
-id: "hard-009"
-name: "In-Memory Outbox API And Background Worker"
-difficulty: "hard"
+id: "medium-009"
+name: "Room Reservations API"
+difficulty: "medium"
 score:
-  compile: 3
+  compile: 2
   tests:
-    endpoint_records_command_and_outbox_atomically: 4
-    worker_publishes_pending_events: 4
-    avoids_publishing_successful_event_twice: 5
-    retries_after_temporary_failure: 4
-    allows_replacing_publisher_in_tests: 3
-    respects_worker_cancellation: 3
-    exposes_command_and_event_status: 3
+    post_reservations_creates_valid_reservation: 3
+    rejects_invalid_interval_with_400: 3
+    rejects_conflict_in_same_room_with_409: 5
+    accepts_same_time_in_different_rooms: 3
+    lists_room_reservations_in_order: 2
 language: "csharp"
 dotnet_version: "8"
 project_type: "webapi"
-generated_file: "Controllers/CommandsController.cs"
+generated_file: "Controllers/ReservationsController.cs"
 solution_class: "Solution"
 solution_method: "Execute"
 public_files:

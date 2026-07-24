@@ -2,7 +2,7 @@ id: "hard-001"
 name: "Concurrent LFU Cache With Single-Flight Refresh"
 difficulty: "hard"
 score:
-  compile: 2
+  compile: 3
   tests:
     stores_and_returns_values_before_ttl: 3
     expires_entries_using_injected_clock: 4

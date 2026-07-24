@@ -127,3 +127,37 @@ public sealed class BackpressuredEtlPipeline<TInput, TOutput>
         return new EtlResult(readCount, writtenCount, errors);
     }
 }
+
+public sealed class ResilientTransformer<TInput, TOutput> : IAsyncRecordTransformer<TInput, TOutput>
+{
+    private readonly IAsyncRecordTransformer<TInput, TOutput> inner;
+    private readonly int maxAttempts;
+
+    public ResilientTransformer(IAsyncRecordTransformer<TInput, TOutput> inner, int maxAttempts)
+    {
+        ArgumentNullException.ThrowIfNull(inner);
+        if (maxAttempts < 1)
+            throw new ArgumentOutOfRangeException(nameof(maxAttempts), "Must be positive.");
+
+        this.inner = inner;
+        this.maxAttempts = maxAttempts;
+    }
+
+    public async ValueTask<TOutput> TransformAsync(TInput item, CancellationToken cancellationToken = default)
+    {
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            try
+            {
+                return await inner.TransformAsync(item, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+        }
+
+        // Exhaust all attempts — propagate the last exception
+        return await inner.TransformAsync(item, cancellationToken);
+    }
+}

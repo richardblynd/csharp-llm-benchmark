@@ -119,6 +119,97 @@ public class UnitTests
         Assert.AreEqual(0, writer.Batches.Count);
     }
 
+    // ---- ResilientTransformer: retry behavior ----
+
+    [TestMethod]
+    public async Task resilient_transformer_retries_transient_failures_to_limit()
+    {
+        var attempts = 0;
+        var inner = new DelegateTransformer<string, string>(value =>
+        {
+            attempts++;
+            if (attempts < 3)
+                throw new InvalidOperationException("transient");
+            return value.ToUpperInvariant();
+        });
+        var resilient = new global::ResilientTransformer<string, string>(inner, 3);
+
+        var result = await resilient.TransformAsync("hello");
+
+        Assert.AreEqual("HELLO", result);
+        Assert.AreEqual(3, attempts);
+    }
+
+    [TestMethod]
+    public async Task resilient_transformer_succeeds_on_first_try()
+    {
+        var calls = 0;
+        var inner = new DelegateTransformer<string, string>(value =>
+        {
+            calls++;
+            return value.ToUpperInvariant();
+        });
+        var resilient = new global::ResilientTransformer<string, string>(inner, 3);
+
+        await resilient.TransformAsync("hello");
+
+        Assert.AreEqual(1, calls);
+    }
+
+    [TestMethod]
+    public async Task resilient_transformer_records_error_after_exhausting_retries()
+    {
+        var writer = new RecordingWriter<string>();
+        var pipeline = new global::BackpressuredEtlPipeline<string, string>(
+            new EnumerableReader<string>(new[] { "ok", "will-fail", "fine" }),
+            new DelegateValidator<string>(_ => null),
+            new global::ResilientTransformer<string, string>(
+                new DelegateTransformer<string, string>(item => item == "will-fail" ? throw new InvalidOperationException("permanent") : item.ToUpperInvariant()),
+                maxAttempts: 2),
+            writer,
+            new global::EtlOptions(1, 3));
+
+        var result = await pipeline.RunAsync();
+
+        Assert.AreEqual(3, result.ReadCount);
+        Assert.AreEqual(2, result.WrittenCount);
+        Assert.AreEqual(1, result.Errors.Count);
+        CollectionAssert.AreEqual(new[] { "OK", "FINE" }, writer.Flattened.ToArray());
+    }
+
+    [TestMethod]
+    public async Task resilient_transformer_preserves_result_order_with_retries()
+    {
+        var writer = new RecordingWriter<string>();
+        var pipeline = CreatePipelineWithResilient(
+            new[] { "a", "b", "c" },
+            writer,
+            batchSize: 3);
+
+        var result = await pipeline.RunAsync();
+
+        Assert.AreEqual(0, result.Errors.Count);
+        CollectionAssert.AreEqual(new[] { "A", "B", "C" }, writer.Flattened.ToArray());
+    }
+
+    [TestMethod]
+    public async Task resilient_transformer_does_not_retry_beyond_limit()
+    {
+        var calls = 0;
+        var inner = new DelegateTransformer<string, string>(_ =>
+        {
+            calls++;
+            throw new InvalidOperationException();
+        });
+        var resilient = new global::ResilientTransformer<string, string>(inner, maxAttempts: 4);
+
+        await Assert.ThrowsExceptionAsync<InvalidOperationException>(() => resilient.TransformAsync("x"));
+
+        Assert.AreEqual(4, calls);
+    }
+
+    // ---- helpers ----
+
     private static global::BackpressuredEtlPipeline<string, string> CreatePipeline(
         IReadOnlyList<string> items,
         RecordingWriter<string> writer,
@@ -128,6 +219,21 @@ public class UnitTests
             new EnumerableReader<string>(items),
             new DelegateValidator<string>(_ => null),
             new DelegateTransformer<string, string>(item => item.ToUpperInvariant()),
+            writer,
+            new global::EtlOptions(batchSize, 2));
+    }
+
+    private static global::BackpressuredEtlPipeline<string, string> CreatePipelineWithResilient(
+        IReadOnlyList<string> items,
+        RecordingWriter<string> writer,
+        int batchSize)
+    {
+        return new global::BackpressuredEtlPipeline<string, string>(
+            new EnumerableReader<string>(items),
+            new DelegateValidator<string>(_ => null),
+            new global::ResilientTransformer<string, string>(
+                new DelegateTransformer<string, string>(item => item.ToUpperInvariant()),
+                maxAttempts: 2),
             writer,
             new global::EtlOptions(batchSize, 2));
     }

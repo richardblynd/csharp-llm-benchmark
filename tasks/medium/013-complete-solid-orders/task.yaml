@@ -1,16 +1,14 @@
-id: "hard-005"
-name: "Priority Job Scheduler With Dependencies"
-difficulty: "hard"
+id: "medium-013"
+name: "Complete SOLID Order Refactoring"
+difficulty: "medium"
 score:
-  compile: 3
+  compile: 2
   tests:
-    runs_ready_jobs_by_priority: 4
-    waits_for_successful_dependencies: 5
-    enforces_max_parallelism: 5
-    retries_failed_jobs_to_configured_limit: 4
-    skips_dependents_after_failed_dependency: 4
-    honors_cancellation: 4
-    detects_dependency_cycles_before_running: 2
+    separates_main_responsibilities: 4
+    extends_discount_and_shipping_without_changing_processor: 4
+    keeps_pricing_rules_substitutable: 3
+    uses_small_interfaces_for_receipt_and_persistence: 3
+    depends_on_testable_abstractions: 4
 language: "csharp"
 dotnet_version: "8"
 project_type: "classlib"

@@ -2,7 +2,7 @@ id: "hard-010"
 name: "Configurable Request Pipeline"
 difficulty: "hard"
 score:
-  compile: 2
+  compile: 3
   tests:
     injects_or_preserves_correlation_id: 3
     validates_options_on_startup: 4

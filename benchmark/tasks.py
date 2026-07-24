@@ -8,25 +8,26 @@ from benchmark.simple_yaml import load_yaml
 
 DEFAULT_DIFFICULTY_ORDER = ("easy", "medium", "hard")
 
-# Fixed set of 7 tasks used for temperature discovery. Covers 6 skill categories:
-# basic parsing, generics/data structures, algorithms/graphs, Web API,
-# SOLID/OOP patterns, advanced APIs with concurrency, and composition design.
+# Fixed set of 7 tasks used for temperature discovery. Covers 7 skill categories:
+# basic parsing/aggregation, generics/data structures, async/parallelism,
+# Web API + domain logic, SOLID/OOP patterns, advanced APIs with concurrency,
+# and composable expression design.
 DISCOVERY_TASK_IDS = (
     "easy-003",
-    "easy-008",
-    "medium-006",
-    "medium-012",
-    "medium-015",
+    "easy-006",
+    "medium-006",   # parallel-executor (bounded concurrency + cancellation)
+    "medium-009",   # room-reservations-api
+    "medium-011",   # srp-reporting
     "hard-007",
     "hard-013",
 )
 
 DISCOVERY_TASK_DESCRIPTIONS = {
-    "easy-003": ("Basic", "Parsing + dictionary + string manipulation"),
-    "easy-008": ("Generics/Type", "Generic data structure with internal state"),
-    "medium-006": ("Algorithm/Graph", "Topological sort + cycle detection"),
-    "medium-012": ("Web API", "ASP.NET Core + interval conflict detection"),
-    "medium-015": ("SOLID/OOP", "Strategy pattern + composition by interface"),
+    "easy-003": ("Basic", "Parsing + dictionary + category aggregation"),
+    "easy-006": ("Generics/Type", "Generic data structure with internal state"),
+    "medium-006": ("Async/Parallel", "Bounded parallel execution with cancellation"),
+    "medium-009": ("Web API", "ASP.NET Core + interval conflict detection"),
+    "medium-011": ("SOLID/OOP", "SRP separation of concerns"),
     "hard-007": ("Advanced Web API", "Idempotency + thread safety"),
     "hard-013": ("Advanced Design", "Composable generic expression trees"),
 }

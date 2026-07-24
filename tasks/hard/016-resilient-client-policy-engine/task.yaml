@@ -2,7 +2,7 @@ id: "hard-016"
 name: "Resilient Client Policy Engine"
 difficulty: "hard"
 score:
-  compile: 2
+  compile: 3
   tests:
     applies_retry_only_for_configured_failures: 4
     opens_and_closes_circuit_breaker_with_injected_clock: 5

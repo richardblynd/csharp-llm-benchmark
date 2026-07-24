@@ -2,7 +2,7 @@ id: "hard-012"
 name: "SQLite Inventory Service"
 difficulty: "hard"
 score:
-  compile: 2
+  compile: 3
   tests:
     creates_schema_and_inserts_initial_product: 3
     adjusts_stock_inside_transactions: 4

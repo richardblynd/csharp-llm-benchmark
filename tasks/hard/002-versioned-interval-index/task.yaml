@@ -2,7 +2,7 @@ id: "hard-002"
 name: "Versioned Interval Index"
 difficulty: "hard"
 score:
-  compile: 2
+  compile: 3
   tests:
     inserts_and_queries_simple_intervals: 3
     returns_all_range_intersections: 5

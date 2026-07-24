@@ -2,7 +2,7 @@ id: "hard-003"
 name: "Incremental Dependency Planner"
 difficulty: "hard"
 score:
-  compile: 2
+  compile: 3
   tests:
     orders_acyclic_dependencies: 4
     uses_deterministic_priority_then_id_order: 3

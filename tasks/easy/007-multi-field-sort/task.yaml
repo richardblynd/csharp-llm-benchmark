@@ -1,16 +1,13 @@
-id: "hard-005"
-name: "Priority Job Scheduler With Dependencies"
-difficulty: "hard"
+id: "easy-007"
+name: "Multi-field Object Sort"
+difficulty: "easy"
 score:
-  compile: 3
+  compile: 1
   tests:
-    runs_ready_jobs_by_priority: 4
-    waits_for_successful_dependencies: 5
-    enforces_max_parallelism: 5
-    retries_failed_jobs_to_configured_limit: 4
-    skips_dependents_after_failed_dependency: 4
-    honors_cancellation: 4
-    detects_dependency_cycles_before_running: 2
+    sorts_by_last_name: 2
+    sorts_by_first_name_when_last_name_matches: 1
+    sorts_by_age_descending_when_names_match: 1
+    does_not_mutate_input_order: 1
 language: "csharp"
 dotnet_version: "8"
 project_type: "classlib"

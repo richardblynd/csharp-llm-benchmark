@@ -2,7 +2,7 @@ id: "hard-008"
 name: "Multi-Tenant Documents API With ETags"
 difficulty: "hard"
 score:
-  compile: 2
+  compile: 3
   tests:
     creates_and_reads_document_within_tenant: 3
     isolates_documents_between_tenants: 4

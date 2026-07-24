@@ -2,7 +2,7 @@ id: "hard-014"
 name: "Plugin-Based Pricing Engine"
 difficulty: "hard"
 score:
-  compile: 2
+  compile: 3
   tests:
     executes_known_strategies_in_configured_order: 4
     registers_custom_strategy_without_changing_engine: 5

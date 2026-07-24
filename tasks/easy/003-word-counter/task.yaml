@@ -1,13 +1,17 @@
 id: "easy-003"
-name: "Word Counter"
+name: "Word Counter And Category Aggregation"
 difficulty: "easy"
 score:
   compile: 1
   tests:
-    counts_repeated_words: 1
+    counts_repeated_words: 2
     ignores_punctuation: 1
     lowercases_keys: 1
     returns_empty_dictionary_for_blank_text: 1
+    sums_values_per_category: 2
+    trims_category_names: 1
+    ignores_blank_categories: 1
+    returns_empty_dictionary_for_empty_input: 1
 language: "csharp"
 dotnet_version: "8"
 project_type: "classlib"
