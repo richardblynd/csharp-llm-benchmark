@@ -342,12 +342,12 @@ def load_config(path: Path | None) -> AppConfig:
                 "pi.build_fix_rounds",
             ),
             context_limit=(
-                _optional_positive_int(pi_data.get("context_limit"))
+                _optional_positive_int(pi_data.get("context_limit"), "pi.context_limit")
                 if pi_data.get("context_limit") is not None
                 else PiConfig.context_limit
             ),
             max_tokens=(
-                _optional_positive_int(pi_data.get("max_tokens"))
+                _optional_positive_int(pi_data.get("max_tokens"), "pi.max_tokens")
                 if pi_data.get("max_tokens") is not None
                 else PiConfig.max_tokens
             ),
