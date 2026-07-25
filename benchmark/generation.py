@@ -853,12 +853,12 @@ class PiGenerator:
             shutil.rmtree(workspace)
         self._prepare_workspace(task, workspace, prompt)
 
-        # Build system prompt file and models.json into .pi directory
+        # Write models.json into .pi directory for provider config.
+        # Intentionally do NOT write SYSTEM.md — let pi use its native
+        # system prompt so the benchmark reflects real-world usage (same as
+        # OpenCode, which keeps its own internal system prompt).
         pi_config_dir = workspace / ".pi"
         pi_config_dir.mkdir(parents=True, exist_ok=True)
-        (pi_config_dir / "SYSTEM.md").write_text(
-            _build_pi_system_prompt(), encoding="utf-8"
-        )
         self._write_models_json(pi_config_dir)
 
         # Build container home with models.json for provider config
@@ -1309,9 +1309,6 @@ def _build_pi_prompt_suffix(config: PiConfig) -> str:
         "and the project builds cleanly."
     )
 
-
-def _build_pi_system_prompt() -> str:
-    return _opencode_solution_rules()
 
 
 def _pi_workspace_generation_instructions(task: Task) -> str:
