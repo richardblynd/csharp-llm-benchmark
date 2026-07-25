@@ -91,7 +91,14 @@ class OpenCodeConfig:
 @dataclass(frozen=True)
 class PiConfig:
     version: str | None = None
+    package: str = "@earendil-works/pi-coding-agent"
+    docker_image: str = "csharp-llm-benchmark-agentic"
+    cache_dir: Path = Path(".cache/pi")
+    network: str = "bridge"
     timeout_seconds: int = 900
+    keep_timed_out_containers: bool = False
+    prepare_ahead: bool = True
+    precreate_container: bool = False
     verify_build: bool = True
     build_fix_rounds: int = 3
     context_limit: int | None = None
@@ -329,9 +336,32 @@ def load_config(path: Path | None) -> AppConfig:
         ),
         pi=PiConfig(
             version=_optional_string(pi_data.get("version")),
+            package=str(pi_data.get("package", PiConfig.package)),
+            docker_image=str(
+                pi_data.get("docker_image", PiConfig.docker_image)
+            ),
+            cache_dir=Path(
+                str(pi_data.get("cache_dir", PiConfig.cache_dir))
+            ),
+            network=str(pi_data.get("network", PiConfig.network)),
             timeout_seconds=_positive_int(
                 pi_data.get("timeout_seconds", PiConfig.timeout_seconds),
                 "pi.timeout_seconds",
+            ),
+            keep_timed_out_containers=_bool_value(
+                pi_data.get(
+                    "keep_timed_out_containers",
+                    PiConfig.keep_timed_out_containers,
+                ),
+                "pi.keep_timed_out_containers",
+            ),
+            prepare_ahead=_bool_value(
+                pi_data.get("prepare_ahead", PiConfig.prepare_ahead),
+                "pi.prepare_ahead",
+            ),
+            precreate_container=_bool_value(
+                pi_data.get("precreate_container", PiConfig.precreate_container),
+                "pi.precreate_container",
             ),
             verify_build=_bool_value(
                 pi_data.get("verify_build", PiConfig.verify_build),
@@ -496,11 +526,18 @@ def apply_cli_overrides(
                 if pi_version is not None
                 else config.pi.version
             ),
+            package=config.pi.package,
+            docker_image=config.pi.docker_image,
+            cache_dir=config.pi.cache_dir,
+            network=config.pi.network,
             timeout_seconds=(
                 _positive_int(pi_timeout_seconds, "pi.timeout_seconds")
                 if pi_timeout_seconds is not None
                 else config.pi.timeout_seconds
             ),
+            keep_timed_out_containers=config.pi.keep_timed_out_containers,
+            prepare_ahead=config.pi.prepare_ahead,
+            precreate_container=config.pi.precreate_container,
             verify_build=config.pi.verify_build,
             build_fix_rounds=config.pi.build_fix_rounds,
             context_limit=config.pi.context_limit,

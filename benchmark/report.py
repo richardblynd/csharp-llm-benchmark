@@ -120,9 +120,18 @@ def write_summary(
         "pi": (
             {
                 "version": config.pi.version,
+                "package": config.pi.package,
+                "docker_image": config.pi.docker_image,
+                "cache_dir": str(config.pi.cache_dir),
+                "network": config.pi.network,
                 "timeout_seconds": config.pi.timeout_seconds,
+                "keep_timed_out_containers": config.pi.keep_timed_out_containers,
+                "prepare_ahead": config.pi.prepare_ahead,
+                "precreate_container": config.pi.precreate_container,
                 "verify_build": config.pi.verify_build,
                 "build_fix_rounds": config.pi.build_fix_rounds,
+                "context_limit": config.pi.context_limit,
+                "max_tokens": config.pi.max_tokens,
             }
             if config.benchmark.generator == "pi"
             else None

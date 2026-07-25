@@ -9,6 +9,7 @@ from collections import deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
+from typing import Union
 
 from benchmark.config import (
     apply_cli_overrides,
@@ -20,7 +21,10 @@ from benchmark.config import (
 from benchmark.generation import (
     GeneratedSolution,
     OpenCodeGenerator,
+    OpenCodePreflight,
+    PiGenerator,
     PreparedOpenCodeGeneration,
+    PreparedPiGeneration,
     SolutionGenerator,
     create_solution_generator,
     opencode_metadata_to_dict,
@@ -62,11 +66,14 @@ class PendingGeneration:
     task_dir: Path
 
 
+_Prepared = Union[PreparedOpenCodeGeneration, PreparedPiGeneration]
+
+
 @dataclass(frozen=True)
 class ReadyGeneration:
     pending: PendingGeneration
-    generator: OpenCodeGenerator
-    prepared: PreparedOpenCodeGeneration
+    generator: SolutionGenerator  # OpenCodeGenerator or PiGenerator
+    prepared: _Prepared
 
 
 @dataclass(frozen=True)
@@ -783,6 +790,15 @@ def _run_task_major_temperatures(
     if config.benchmark.generator == "pi":
         header_lines.append(f"Pi version: {config.pi.version}")
         header_lines.append(
+            f"Pi prepare ahead: "
+            + ("enabled" if config.pi.prepare_ahead else "disabled")
+        )
+        if config.pi.prepare_ahead:
+            header_lines.append(
+                f"Pi precreate container: "
+                + ("enabled" if config.pi.precreate_container else "disabled")
+            )
+        header_lines.append(
             f"Pi timeout: {config.pi.timeout_seconds}s"
         )
         header_lines.append(
@@ -815,8 +831,8 @@ def _run_task_major_temperatures(
         header_lines=header_lines,
         phase_label=phase_label,
     )
-    if _can_prepare_opencode_ahead(config, solution_generators):
-        _run_prepared_opencode_queue(
+    if _can_prepare_ahead(config, solution_generators):
+        _run_prepared_agentic_queue(
             config,
             runner,
             solution_generators,
@@ -852,18 +868,28 @@ def _run_task_major_temperatures(
     ]
 
 
-def _can_prepare_opencode_ahead(
+def _can_prepare_ahead(
     config,
     solution_generators: list[SolutionGenerator],
 ) -> bool:
-    return (
-        config.benchmark.generator == "opencode"
-        and config.opencode.prepare_ahead
-        and all(
-            isinstance(generator, OpenCodeGenerator)
-            for generator in solution_generators
+    """True if the active generator supports prepare-ahead mode."""
+    if config.benchmark.generator == "opencode":
+        return (
+            config.opencode.prepare_ahead
+            and all(
+                isinstance(generator, OpenCodeGenerator)
+                for generator in solution_generators
+            )
         )
-    )
+    if config.benchmark.generator == "pi":
+        return (
+            config.pi.prepare_ahead
+            and all(
+                isinstance(generator, PiGenerator)
+                for generator in solution_generators
+            )
+        )
+    return False
 
 
 def _run_generation_queue(
@@ -964,7 +990,7 @@ def _run_generation_queue(
                 )
 
 
-def _run_prepared_opencode_queue(
+def _run_prepared_agentic_queue(
     config,
     runner: DockerRunner,
     solution_generators: list[SolutionGenerator],
@@ -973,18 +999,18 @@ def _run_prepared_opencode_queue(
     dashboard_rows: list[DashboardRow],
     task_scores_by_temperature: list[list[TaskScore | None]],
 ) -> None:
+    """Run prepare-ahead pipeline for OpenCode or Pi generators."""
     if not queued_generations:
         dashboard.render()
         return
 
+    # Run preflight (npm install) once per generator type before the loop
     for generator in solution_generators:
-        if not isinstance(generator, OpenCodeGenerator):
-            continue
         generator.preflight()
 
     max_workers = config.benchmark.generation_workers
     next_prepare_index = 0
-    active_prepares: dict[Future[PreparedOpenCodeGeneration], PendingGeneration] = {}
+    active_prepares: dict[Future[_Prepared], PendingGeneration] = {}
     ready_queue: deque[ReadyGeneration] = deque()
     active_generations: dict[Future[GeneratedSolution], ReadyGeneration] = {}
     pending: dict[Future[TaskRunResult], PendingEvaluation] = {}
@@ -997,11 +1023,7 @@ def _run_prepared_opencode_queue(
         ):
             pending_gen = queued_generations[next_prepare_index]
             generator = solution_generators[pending_gen.temperature_index]
-            if not isinstance(generator, OpenCodeGenerator):
-                raise RuntimeError(
-                    "OpenCode prepare ahead requires OpenCode generators."
-                )
-            future, _pending = _queue_opencode_prepare(
+            future, _pending = _queue_agentic_prepare(
                 prepare_executor,
                 generator,
                 pending_gen,
@@ -1017,7 +1039,7 @@ def _run_prepared_opencode_queue(
         while len(active_generations) < max_workers and ready_queue:
             ready = ready_queue.popleft()
             future = generation_executor.submit(
-                _run_prepared_opencode_solution,
+                _run_prepared_agentic_solution,
                 ready.generator,
                 ready.prepared,
             )
@@ -1026,7 +1048,7 @@ def _run_prepared_opencode_queue(
         queue_prepare(prepare_executor)
 
     def error_cleanup() -> None:
-        _cancel_batched_opencode_work(
+        _cancel_batched_agentic_work(
             runner,
             solution_generators,
             active_prepares,
@@ -1038,7 +1060,7 @@ def _run_prepared_opencode_queue(
 
     with ThreadPoolExecutor(
         max_workers=max_workers,
-        thread_name_prefix="benchmark-opencode-prepare",
+        thread_name_prefix="benchmark-agentic-prepare",
     ) as prepare_executor, ThreadPoolExecutor(
         max_workers=max_workers,
         thread_name_prefix="benchmark-llm",
@@ -1082,16 +1104,12 @@ def _run_prepared_opencode_queue(
                     error_cleanup()
                     dashboard.render()
                     raise RuntimeError(
-                        f"OpenCode preparation failed for task "
+                        f"Preparation failed for task "
                         f"{pending_gen.task.id}: {exc}"
                     ) from exc
                 generator = solution_generators[
                     pending_gen.temperature_index
                 ]
-                if not isinstance(generator, OpenCodeGenerator):
-                    raise RuntimeError(
-                        "OpenCode prepare ahead requires OpenCode generators."
-                    )
                 ready_queue.append(
                     ReadyGeneration(
                         pending=pending_gen,
@@ -1175,16 +1193,16 @@ def _cancel_all_pending_work(
     runner.cancel()
 
 
-def _cancel_batched_opencode_work(
+def _cancel_batched_agentic_work(
     runner: DockerRunner,
     solution_generators: list[SolutionGenerator],
-    active_prepares: dict[Future[PreparedOpenCodeGeneration], PendingGeneration],
+    active_prepares: dict[Future[_Prepared], PendingGeneration],
     active_generations: dict[Future[GeneratedSolution], ReadyGeneration],
     ready_queue: deque[ReadyGeneration],
     pending_evaluations: dict[Future[TaskRunResult], PendingEvaluation],
     rows: list[DashboardRow],
 ) -> None:
-    """Cancel every stage of the batched opencode pipeline."""
+    """Cancel every stage of the batched prepare-ahead pipeline."""
     # Drain & clean up items sitting in the ready queue (prepared but not started)
     for ready in ready_queue:
         ready.generator.cleanup_prepared(ready.prepared)
@@ -1222,16 +1240,16 @@ def _queue_generation(
     )
 
 
-def _queue_opencode_prepare(
+def _queue_agentic_prepare(
     executor: ThreadPoolExecutor,
-    generator: OpenCodeGenerator,
+    generator: SolutionGenerator,  # OpenCodeGenerator or PiGenerator
     pending_generation: PendingGeneration,
-) -> tuple[Future[PreparedOpenCodeGeneration], PendingGeneration]:
+) -> tuple[Future[_Prepared], PendingGeneration]:
     task_dir = pending_generation.task_dir
     task_dir.mkdir(parents=True, exist_ok=True)
     return (
         executor.submit(
-            _prepare_opencode_solution,
+            _prepare_agentic_solution,
             generator,
             pending_generation.task,
             task_dir,
@@ -1248,17 +1266,17 @@ def _generate_solution(
     return generator.generate(task, task_dir)
 
 
-def _prepare_opencode_solution(
-    generator: OpenCodeGenerator,
+def _prepare_agentic_solution(
+    generator: SolutionGenerator,  # OpenCodeGenerator or PiGenerator
     task: Task,
     task_dir: Path,
-) -> PreparedOpenCodeGeneration:
+) -> _Prepared:
     return generator.prepare(task, task_dir)
 
 
-def _run_prepared_opencode_solution(
-    generator: OpenCodeGenerator,
-    prepared: PreparedOpenCodeGeneration,
+def _run_prepared_agentic_solution(
+    generator: SolutionGenerator,  # OpenCodeGenerator or PiGenerator
+    prepared: _Prepared,
 ) -> GeneratedSolution:
     return generator.run_prepared(prepared)
 

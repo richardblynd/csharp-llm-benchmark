@@ -9,10 +9,12 @@ ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
+        curl \
         git \
-        nodejs \
-        npm \
         ripgrep \
+        gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --shell /bin/bash benchmark

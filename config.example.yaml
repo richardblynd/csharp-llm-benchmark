@@ -99,7 +99,19 @@ opencode:
 pi:
   # Required when benchmark.generator is "pi".
   version: "0.x.y"
+  package: "@earendil-works/pi-coding-agent"
+  docker_image: "csharp-llm-benchmark-agentic"
+  cache_dir: ".cache/pi"
+  network: "bridge"
   timeout_seconds: 900
+  # Preserve containers on timeout for debugging (default: false).
+  keep_timed_out_containers: false
+  # Prepares the next task workspace/config while the current pi session is
+  # running. The LLM session itself remains serial.
+  prepare_ahead: true
+  # More aggressive: docker-create the next task container during preparation,
+  # but only docker-start it after the current pi session finishes.
+  precreate_container: false
   # Ask the agent to compile the workspace project after writing the file and
   # fix any compiler errors before finishing (build-fix loop).
   verify_build: true

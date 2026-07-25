@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import sys
 import shutil
 import subprocess
 import threading
@@ -62,11 +63,33 @@ class PreparedOpenCodeGeneration:
 
 
 @dataclass(frozen=True)
+class PiPreflight:
+    package: str
+    install_time_seconds: float
+    install_output: str
+
+
+@dataclass(frozen=True)
+class PreparedPiGeneration:
+    task: Task
+    task_dir: Path
+    workspace: Path
+    home_dir: Path
+    preflight: PiPreflight
+    container_name: str
+    docker_command: list[str]
+    precreated: bool = False
+
+
+@dataclass(frozen=True)
 class PiRunMetadata:
     version_configured: str
+    package: str
+    install_time_seconds: float
     session_time_seconds: float
     exit_code: int
     timed_out: bool = False
+    container_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -463,7 +486,7 @@ class OpenCodeGenerator:
 
     def _ensure_opencode_installed(self) -> CommandResult:
         install_dir = self._opencode_install_dir()
-        install_dir.mkdir(parents=True, exist_ok=True)
+        _ensure_is_directory(install_dir)
         package_spec = f"{self._opencode.package}@{self._opencode.version}"
         script = "\n".join(
             [
@@ -639,6 +662,7 @@ class OpenCodeGenerator:
         create: bool,
     ) -> list[str]:
         install_dir = self._opencode_install_dir()
+        _ensure_is_directory(install_dir)
         env = [
             "--env",
             "OPENCODE_BENCHMARK_API_KEY",
@@ -767,6 +791,47 @@ class OpenCodeGenerator:
             return self._opencode.container_base_url.rstrip("/")
         return translate_base_url_for_container(self._llm.base_url)
 
+
+def _ensure_is_directory(path: Path, *, retries: int = 3) -> None:
+    """Ensure *path* is a directory.
+
+    On Windows + Docker Desktop (especially via WSL), a ``docker run --mount
+    type=bind`` whose source does **not** exist yet can silently create it as
+    an **empty file** on the host.  Subsequent calls to ``mkdir(exist_ok=True)``
+    then raise ``FileExistsError: [Errno 17] File exists``.
+
+    This helper removes stale empty-file placeholders and retries to handle
+    race conditions between parallel Docker containers.
+    """
+    abs_path = path.resolve()
+    for attempt in range(1, retries + 1):
+        # Check parent chain — Docker can create intermediate segments as files too
+        for ancestor in path.parents:
+            if not ancestor.exists():
+                break
+            if ancestor.is_file():
+                ancestor.unlink()
+                print(
+                    f"  [docker-fix] removed stale file placeholder: {ancestor.resolve()}",
+                    file=sys.stderr,
+                )
+        # Handle the target itself
+        if path.is_file():
+            print(
+                f"  [docker-fix] removing stale install dir (file): {abs_path} "
+                f"(attempt {attempt}/{retries})",
+                file=sys.stderr,
+            )
+            path.unlink()
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            return
+        except FileExistsError as exc:
+            if path.is_file():
+                path.unlink()
+                continue  # retry mkdir after unlinking
+            raise
+
 def _run_docker_command(
     docker_command: list[str],
     *,
@@ -823,135 +888,259 @@ def create_solution_generator(config: AppConfig) -> SolutionGenerator:
 
 
 class PiGenerator:
-    _install_lock: ClassVar[threading.Lock] = threading.Lock()
-    _install_cache: ClassVar[dict[tuple[str, ...], float]] = {}
-
-    _PI_DOCKER_IMAGE = "csharp-llm-benchmark-agentic"
-    _PI_PACKAGE = "@earendil-works/pi-coding-agent"
-    _DEFAULT_CACHE_DIR = Path(".cache/pi")
+    _preflight_lock: ClassVar[threading.Lock] = threading.Lock()
+    _preflight_cache: ClassVar[dict[tuple[str, ...], PiPreflight]] = {}
 
     def __init__(self, config: AppConfig):
         if config.pi.version is None:
             raise ValueError("pi.version is required for the pi generator")
         self._llm = config.llm
         self._pi = config.pi
-        self._install_time_seconds: float | None = None
+
+    # -- public API mirroring OpenCodeGenerator ---------------------------------
 
     def generate(self, task: Task, task_dir: Path) -> GeneratedSolution:
-        # Ensure pi is installed in cache
-        if self._install_time_seconds is None:
-            install_result = self._ensure_pi_installed()
-            self._install_time_seconds = install_result
+        """Sync path when prepare-ahead is disabled."""
+        prepared = self.prepare(task, task_dir)
+        return self.run_prepared(prepared)
 
+    def preflight(self) -> PiPreflight:
+        """Install / verify the pi npm package once per execution (cached)."""
+        cache_key = self._preflight_cache_key()
+        with self._preflight_lock:
+            cached = self._preflight_cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+            install_started_at = time.perf_counter()
+            _, output = self._ensure_pi_installed()
+            install_time_seconds = time.perf_counter() - install_started_at
+
+            preflight = PiPreflight(
+                package=self._pi.package,
+                install_time_seconds=install_time_seconds,
+                install_output=output,
+            )
+            self._preflight_cache[cache_key] = preflight
+            return preflight
+
+    def prepare(self, task: Task, task_dir: Path) -> PreparedPiGeneration:
+        """Prepare workspace + optionally docker-create container."""
+        preflight = self.preflight()
         prompt = self._build_user_prompt(task)
         (task_dir / "prompt.md").write_text(task.prompt, encoding="utf-8")
         (task_dir / "pi-user-prompt.md").write_text(prompt, encoding="utf-8")
+        (task_dir / "pi-install.log").write_text(
+            preflight.install_output + "\n",
+            encoding="utf-8",
+        )
 
-        # Prepare workspace inside task dir
-        workspace = task_dir / "pi-workspace"
-        if workspace.exists():
-            shutil.rmtree(workspace)
-        self._prepare_workspace(task, workspace, prompt)
-
-        # Write models.json into .pi directory for provider config.
-        # Intentionally do NOT write SYSTEM.md — let pi use its native
-        # system prompt so the benchmark reflects real-world usage (same as
-        # OpenCode, which keeps its own internal system prompt).
-        pi_config_dir = workspace / ".pi"
-        pi_config_dir.mkdir(parents=True, exist_ok=True)
-        self._write_models_json(pi_config_dir)
-
-        # Build container home with models.json for provider config
+        workspace = self._prepare_workspace(task, task_dir, prompt)
         home_dir = task_dir / "pi-home"
         home_dir.mkdir(parents=True, exist_ok=True)
-        pi_agent_home = home_dir / ".pi" / "agent"
-        pi_agent_home.mkdir(parents=True, exist_ok=True)
-        self._write_models_json(pi_agent_home)
 
         container_name = _container_name("task", task.id, include_prefix=False)
-
-        # Run pi in docker
-        session_started_at = time.perf_counter()
-        run = self._run_pi_session(
+        docker_command = self._pi_docker_command(
             workspace,
             home_dir,
-            prompt,
             container_name=container_name,
+            create=self._pi.precreate_container,
         )
-        session_time_seconds = time.perf_counter() - session_started_at
+        if self._pi.precreate_container:
+            create_result = _run_docker_command(
+                docker_command,
+                timeout=30,
+                env={"OPENCODE_BENCHMARK_API_KEY": self._llm.api_key},
+            )
+            if create_result.exit_code != 0:
+                self._remove_container(container_name)
+                raise RuntimeError(
+                    "Pi container preparation failed: " + create_result.combined_output
+                )
+        return PreparedPiGeneration(
+            task=task,
+            task_dir=task_dir,
+            workspace=workspace,
+            home_dir=home_dir,
+            preflight=preflight,
+            container_name=container_name,
+            docker_command=docker_command,
+            precreated=self._pi.precreate_container,
+        )
 
-        # Write event logs
+    def run_prepared(
+        self,
+        prepared: PreparedPiGeneration,
+    ) -> GeneratedSolution:
+        """Execute the pi session (docker start or run) and interpret result."""
+        try:
+            session_started_at = time.perf_counter()
+            run, session_time_seconds = self._execute_session(prepared)
+            self._write_session_logs(prepared, run)
+            return self._build_solution(prepared, run, session_time_seconds)
+        finally:
+            preserve_timeout_home = (
+                getattr(run, "timed_out", False)
+                and self._pi.keep_timed_out_containers
+            )
+            self._cleanup_pi_home(prepared, preserve=preserve_timeout_home)
+
+    def cleanup_prepared(self, prepared: PreparedPiGeneration) -> None:
+        if prepared.precreated:
+            self._remove_container(prepared.container_name)
+        self._cleanup_pi_home(prepared)
+
+    # -- internal helpers ------------------------------------------------------
+
+    def _execute_session(
+        self,
+        prepared: PreparedPiGeneration,
+    ) -> tuple[CommandResult, float]:
+        """Run the pi session via docker start (precreated) or docker run."""
+        session_started_at = time.perf_counter()
+        if prepared.precreated:
+            run = self._start_precreated_pi(prepared)
+        else:
+            run = _run_docker_command(
+                ["docker", "run", "--rm"] + prepared.docker_command,
+                timeout=self._pi.timeout_seconds,
+                env={"OPENCODE_BENCHMARK_API_KEY": self._llm.api_key},
+                keep_on_timeout=self._pi.keep_timed_out_containers,
+            )
+        return run, time.perf_counter() - session_started_at
+
+    def _start_precreated_pi(
+        self,
+        prepared: PreparedPiGeneration,
+    ) -> CommandResult:
+        """Start a pre-created pi container and attach to its output."""
+        timed_out = False
+        try:
+            run = _run_docker_command(
+                ["docker", "start", "--attach", prepared.container_name],
+                timeout=self._pi.timeout_seconds,
+                env={"OPENCODE_BENCHMARK_API_KEY": self._llm.api_key},
+                keep_on_timeout=self._pi.keep_timed_out_containers,
+            )
+            timed_out = run.timed_out
+            if timed_out and self._pi.keep_timed_out_containers:
+                return CommandResult(
+                    exit_code=run.exit_code,
+                    stdout=run.stdout,
+                    stderr=run.stderr,
+                    timed_out=True,
+                    container_name=prepared.container_name,
+                )
+            return run
+        finally:
+            if not (timed_out and self._pi.keep_timed_out_containers):
+                self._remove_container(prepared.container_name)
+
+    def _write_session_logs(
+        self,
+        prepared: PreparedPiGeneration,
+        run: CommandResult,
+    ) -> None:
+        task_dir = prepared.task_dir
         (task_dir / "response.md").write_text(run.stdout, encoding="utf-8")
         (task_dir / "pi-events.jsonl").write_text(run.stdout, encoding="utf-8")
         if run.stderr:
             (task_dir / "pi-stderr.log").write_text(run.stderr, encoding="utf-8")
 
-        return self._build_solution(task, task_dir, workspace, run, session_time_seconds)
-
-    # -- internal helpers ------------------------------------------------------
-
-    def _ensure_pi_installed(self) -> float:
+    def _ensure_pi_installed(self) -> tuple[float, str]:
         """Install pi npm package into the Docker cache directory.
 
-        Uses a class-level lock so only one install runs at a time across
-        threads, and caches the result keyed by package/version/config.
-
-        Returns install time in seconds (0 if served from cache).
+        Returns (install_time_seconds, combined_output).
         """
-        cache_key = self._pi_install_cache_key()
-        with self._install_lock:
-            cached = self._install_cache.get(cache_key)
-            if cached is not None:
-                return cached
+        install_dir = self._pi_install_dir()
+        print(
+            f"  [pi-install] ensuring dir: {install_dir.resolve()} "
+            f"(exists={install_dir.exists()}, "
+            f"is_file={install_dir.is_file()}, "
+            f"is_dir={install_dir.is_dir()})",
+            file=sys.stderr,
+        )
+        _ensure_is_directory(install_dir)
+        package_spec = f"{self._pi.package}@{self._pi.version}"
 
-            install_dir = self._pi_install_dir()
-            install_dir.mkdir(parents=True, exist_ok=True)
-            package_spec = f"{self._PI_PACKAGE}@{self._pi.version}"
+        script = "\n".join(
+            [
+                "set -eu",
+                '[ ! -d /pi-install ] && rm -rf /pi-install && mkdir -p /pi-install',
+                "cd /pi-install",
+                f'expected={shlex.quote(package_spec)}',
+                'actual="$(cat .pi-package 2>/dev/null || true)"',
+                'if [ "$actual" != "$expected" ]; then',
+                "  rm -rf node_modules package.json package-lock.json .pi-package",
+                "  npm init -y >/dev/null",
+                f'  npm install --no-audit --no-fund --silent {shlex.quote(package_spec)}',
+                '  printf "%s\n" "$expected" > .pi-package',
+                "fi",
+                '[ -x node_modules/.bin/pi ] || { echo "ERROR: pi binary not found after npm install" >&2; exit 1; }',
+            ]
+        )
 
-            script = "\n".join(
-                [
-                    "set -eu",
-                    "cd /pi-install",
-                    f'expected={shlex.quote(package_spec)}',
-                    'actual="$(cat .pi-package 2>/dev/null || true)"',
-                    'if [ "$actual" != "$expected" ]; then',
-                    "  rm -rf node_modules package.json package-lock.json .pi-package",
-                    "  npm init -y >/dev/null",
-                    f'  npm install --no-audit --no-fund --silent {shlex.quote(package_spec)}',
-                    '  printf "%s\\n" "$expected" > .pi-package',
-                    "fi",
-                ]
-            )
+        start = time.perf_counter()
+        install_result = _run_docker_command(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--name",
+                _container_name("install", self._pi.version or "unknown"),
+                "--network",
+                "bridge",
+                "--user",
+                "root",
+                "--mount",
+                f"type=bind,source={install_dir.resolve()},target=/pi-install",
+                self._pi.docker_image,
+                "/bin/sh",
+                "-lc",
+                script,
+            ],
+            timeout=self._pi.timeout_seconds,
+        )
 
-            start = time.perf_counter()
-            _run_docker_command(
-                [
-                    "docker",
-                    "run",
-                    "--rm",
-                    "--name",
-                    _container_name("install", self._pi.version or "unknown"),
-                    "--network",
-                    "bridge",
-                    "--user",
-                    "root",
-                    "--mount",
-                    f"type=bind,source={install_dir.resolve()},target=/pi-install",
-                    self._PI_DOCKER_IMAGE,
-                    "/bin/sh",
-                    "-lc",
-                    script,
-                ],
-                timeout=self._pi.timeout_seconds,
-            )
+        if install_result.exit_code != 0:
             elapsed = time.perf_counter() - start
-            self._install_cache[cache_key] = elapsed
-            return elapsed
+            print(
+                f"\n[pi-install] ERROR: docker run exited with code "
+                f"{install_result.exit_code} after {elapsed:.1f}s",
+                file=sys.stderr,
+            )
+            if install_result.stdout.strip():
+                print(f"  stdout:\n{install_result.stdout[:500]}", file=sys.stderr)
+            if install_result.stderr.strip():
+                print(f"  stderr:\n{install_result.stderr[:500]}", file=sys.stderr)
+            raise RuntimeError(
+                f"pi installation failed (exit {install_result.exit_code}): "
+                + install_result.combined_output[:200]
+            )
+
+        pi_binary = install_dir / "node_modules" / ".bin" / "pi"
+        if not pi_binary.exists():
+            elapsed = time.perf_counter() - start
+            print(
+                f"\n[pi-install] ERROR: binary not found after install "
+                f"({elapsed:.1f}s): {pi_binary.resolve()}",
+                file=sys.stderr,
+            )
+            raise RuntimeError(f"pi installed but binary missing at {pi_binary}")
+
+        elapsed = time.perf_counter() - start
+        print(
+            f"  [pi-install] OK in {elapsed:.1f}s: "
+            f"{package_spec} -> {install_dir.resolve()}",
+            file=sys.stderr,
+        )
+        return elapsed, install_result.combined_output
 
     def _prepare_workspace(
-        self, task: Task, workspace: Path, prompt: str
-    ) -> None:
-        """Copy public files into the agentic workspace."""
+        self, task: Task, task_dir: Path, prompt: str
+    ) -> Path:
+        """Copy public files into the agentic workspace. Returns workspace path."""
+        workspace = task_dir / "pi-workspace"
         if workspace.exists():
             shutil.rmtree(workspace)
         workspace.mkdir(parents=True)
@@ -963,6 +1152,18 @@ class PiGenerator:
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
         (workspace / "BENCHMARK_PROMPT.md").write_text(prompt, encoding="utf-8")
+
+        # Write models.json for provider config inside workspace .pi dir
+        pi_config_dir = workspace / ".pi"
+        pi_config_dir.mkdir(parents=True, exist_ok=True)
+        self._write_models_json(pi_config_dir)
+
+        # Also write into home dir so agent finds it on first run
+        pi_agent_home = task_dir / "pi-home" / ".pi" / "agent"
+        pi_agent_home.mkdir(parents=True, exist_ok=True)
+        self._write_models_json(pi_agent_home)
+
+        return workspace
 
     def _build_user_prompt(self, task: Task) -> str:
         sections = [
@@ -1007,18 +1208,29 @@ class PiGenerator:
             json.dumps(payload, indent=2) + "\n", encoding="utf-8"
         )
 
-    def _run_pi_session(
+    def _pi_docker_command(
         self,
         workspace: Path,
         home_dir: Path,
-        prompt: str,
         *,
         container_name: str,
-    ) -> CommandResult:
-        """Run pi --mode json inside Docker and return command result."""
+        create: bool,
+    ) -> list[str]:
+        """Build the docker run/create command args (without docker verb)."""
         install_dir = self._pi_install_dir()
+        _ensure_is_directory(install_dir)
+
+        pi_binary = install_dir / "node_modules" / ".bin" / "pi"
+        if not pi_binary.exists():
+            raise RuntimeError(
+                f"Pi binary missing at {pi_binary.resolve()} — installation did "
+                f"not complete successfully. Run the benchmark again after clearing "
+                f"the cache (rm -rf .cache/pi) so it re-installs."
+            )
+
         script = (
             "set -eu\n"
+            '[ ! -d /pi-install ] && { rm -rf /pi-install; mkdir -p /pi-install; }\n'
             "cd /workspace\n"
             'prompt="$(cat /workspace/BENCHMARK_PROMPT.md)"\n'
             "/pi-install/node_modules/.bin/pi "
@@ -1028,54 +1240,52 @@ class PiGenerator:
             '"$prompt"'
         )
 
-        return _run_docker_command(
-            [
-                "docker",
-                "run",
-                "--rm",
-                "--name",
-                container_name,
-                "--network",
-                "bridge",
-                "--user",
-                "benchmark",
-                "--add-host",
-                "host.docker.internal:host-gateway",
-                "--env",
-                "OPENCODE_BENCHMARK_API_KEY",
-                "--env",
-                f"PI_CODING_AGENT_DIR=/home/benchmark/.pi/agent",
-                "--mount",
-                f"type=bind,source={install_dir.resolve()},target=/pi-install",
-                "--mount",
-                f"type=bind,source={workspace.resolve()},target=/workspace",
-                "--mount",
-                f"type=bind,source={home_dir.resolve()},target=/home/benchmark",
-                self._PI_DOCKER_IMAGE,
-                "/bin/sh",
-                "-lc",
-                script,
-            ],
-            timeout=self._pi.timeout_seconds,
-        )
+        return [
+            "--name",
+            container_name,
+            "--network",
+            self._pi.network,
+            "--user",
+            "benchmark",
+            "--add-host",
+            "host.docker.internal:host-gateway",
+            "--env",
+            "OPENCODE_BENCHMARK_API_KEY",
+            "--env",
+            "PI_CODING_AGENT_DIR=/home/benchmark/.pi/agent",
+            "--mount",
+            f"type=bind,source={install_dir.resolve()},target=/pi-install",
+            "--mount",
+            f"type=bind,source={workspace.resolve()},target=/workspace",
+            "--mount",
+            f"type=bind,source={home_dir.resolve()},target=/home/benchmark",
+            self._pi.docker_image,
+            "/bin/sh",
+            "-lc",
+            script,
+        ]
 
     def _build_solution(
         self,
-        task: Task,
-        task_dir: Path,
-        workspace: Path,
+        prepared: PreparedPiGeneration,
         run: CommandResult,
         session_time_seconds: float,
     ) -> GeneratedSolution:
         """Interpret a finished pi session and produce a GeneratedSolution."""
+        task = prepared.task
+        task_dir = prepared.task_dir
+        workspace = prepared.workspace
+
         metadata = PiRunMetadata(
             version_configured=self._pi.version or "unknown",
+            package=prepared.preflight.package,
+            install_time_seconds=prepared.preflight.install_time_seconds,
             session_time_seconds=session_time_seconds,
             exit_code=run.exit_code,
             timed_out=getattr(run, "timed_out", False),
+            container_name=run.container_name,
         )
 
-        # Parse token usage from pi events JSONL
         usage = _parse_pi_usage(run.stdout)
 
         generated_path = workspace / task.generated_file
@@ -1126,18 +1336,44 @@ class PiGenerator:
             pi_metadata=metadata,
         )
 
-    def _pi_install_cache_key(self) -> tuple[str, ...]:
-        return (
-            self._PI_PACKAGE,
-            self._pi.version or "",
-            str(self._DEFAULT_CACHE_DIR.resolve()),
-            self._PI_DOCKER_IMAGE,
-            str(self._pi.timeout_seconds),
+    def _cleanup_pi_home(
+        self,
+        prepared: PreparedPiGeneration,
+        *,
+        preserve: bool = False,
+    ) -> None:
+        if preserve:
+            return
+        home_dir = prepared.task_dir / "pi-home"
+        if home_dir.exists():
+            shutil.rmtree(home_dir, ignore_errors=True)
+
+    def _remove_container(self, container_name: str) -> None:
+        subprocess.run(
+            ["docker", "rm", "-f", container_name],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
+
+    def _preflight_cache_key(self) -> tuple[str, ...]:
+        return (
+            self._pi.package,
+            self._pi.version or "",
+            str(self._pi.cache_dir.resolve()),
+            self._pi.docker_image,
+            str(self._pi.timeout_seconds),
+            self._pi.network,
+        )
+
+    def _pi_install_cache_key(self) -> tuple[str, ...]:
+        return self._preflight_cache_key()
 
     def _pi_install_dir(self) -> Path:
         version_key = _safe_cache_key(self._pi.version or "unknown")
-        return self._DEFAULT_CACHE_DIR / "pi-coding-agent" / version_key
+        return self._pi.cache_dir / "pi-coding-agent" / version_key
+
 
 
 def opencode_metadata_to_dict(
