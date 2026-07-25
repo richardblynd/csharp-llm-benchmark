@@ -11,15 +11,25 @@ from benchmark.config import AppConfig
 from benchmark.scorer import BenchmarkScore, TaskScore
 
 
-def create_run_dir(output_dir: Path, *, model_label: str, quantization: str) -> Path:
+def create_run_dir(
+    output_dir: Path,
+    *,
+    model_label: str,
+    quantization: str,
+    kv_cache_quantization: str | None = None,
+) -> Path:
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    run_dir = output_dir / "_".join(
-        [
-            timestamp,
-            _format_run_dir_label(model_label),
-            _format_run_dir_label(quantization),
-        ]
-    )
+    parts: list[str] = [
+        timestamp,
+        _format_run_dir_label(model_label),
+        _format_run_dir_label(quantization),
+    ]
+    if kv_cache_quantization is not None and str(kv_cache_quantization).strip():
+        base = "_".join(parts)
+        run_dir_name = f"{base}@{_format_run_dir_label(str(kv_cache_quantization))}"
+        run_dir = output_dir / run_dir_name
+    else:
+        run_dir = output_dir / "_".join(parts)
     run_dir.mkdir(parents=True, exist_ok=False)
     (run_dir / "tasks").mkdir()
     return run_dir
