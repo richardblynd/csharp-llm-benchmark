@@ -54,7 +54,7 @@ benchmark:
 
 opencode:
   # Required when benchmark.generator is "opencode".
-  version: "1.16.2"
+  version: "1.18.5"
   package: "opencode-ai"
   docker_image: "csharp-llm-benchmark-opencode"
   cache_dir: ".cache/opencode"
