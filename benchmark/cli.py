@@ -5,6 +5,7 @@ import json
 import shutil
 import sys
 import unicodedata
+from collections import deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -961,80 +962,84 @@ def _run_prepared_opencode_queue(
             continue
         generator.preflight()
 
+    max_workers = config.benchmark.generation_workers
     next_prepare_index = 0
-    pending_prepare: Future[PreparedOpenCodeGeneration] | None = None
-    current_prepare: PendingGeneration | None = None
-    ready_generation: ReadyGeneration | None = None
-    pending_generation: Future[GeneratedSolution] | None = None
-    current_generation: ReadyGeneration | None = None
+    active_prepares: dict[Future[PreparedOpenCodeGeneration], PendingGeneration] = {}
+    ready_queue: deque[ReadyGeneration] = deque()
+    active_generations: dict[Future[GeneratedSolution], ReadyGeneration] = {}
     pending: dict[Future[TaskRunResult], PendingEvaluation] = {}
 
-    def queue_prepare(
-        prepare_executor: ThreadPoolExecutor,
-    ) -> None:
+    def queue_prepare(prepare_executor: ThreadPoolExecutor) -> None:
         nonlocal next_prepare_index
-        nonlocal pending_prepare
-        nonlocal current_prepare
-        if pending_prepare is not None or ready_generation is not None:
-            return
-        if next_prepare_index >= len(queued_generations):
-            return
-        pending = queued_generations[next_prepare_index]
-        generator = solution_generators[pending.temperature_index]
-        if not isinstance(generator, OpenCodeGenerator):
-            raise RuntimeError("OpenCode prepare ahead requires OpenCode generators.")
-        pending_prepare, current_prepare = _queue_opencode_prepare(
-            prepare_executor,
-            generator,
-            pending,
-        )
-        dashboard_rows[pending.row_index].llm = "preparing"
-        next_prepare_index += 1
+        while (
+            len(active_prepares) + len(ready_queue) < max_workers
+            and next_prepare_index < len(queued_generations)
+        ):
+            pending_gen = queued_generations[next_prepare_index]
+            generator = solution_generators[pending_gen.temperature_index]
+            if not isinstance(generator, OpenCodeGenerator):
+                raise RuntimeError(
+                    "OpenCode prepare ahead requires OpenCode generators."
+                )
+            future, _pending = _queue_opencode_prepare(
+                prepare_executor,
+                generator,
+                pending_gen,
+            )
+            active_prepares[future] = _pending
+            dashboard_rows[_pending.row_index].llm = "preparing"
+            next_prepare_index += 1
 
-    def start_ready_generation(
+    def start_ready_generations(
         generation_executor: ThreadPoolExecutor,
         prepare_executor: ThreadPoolExecutor,
     ) -> None:
-        nonlocal ready_generation
-        nonlocal pending_generation
-        nonlocal current_generation
-        if pending_generation is not None or ready_generation is None:
-            return
-        pending_generation = generation_executor.submit(
-            _run_prepared_opencode_solution,
-            ready_generation.generator,
-            ready_generation.prepared,
-        )
-        current_generation = ready_generation
-        dashboard_rows[ready_generation.pending.row_index].llm = LLM_RUNNING_STATUS
-        ready_generation = None
+        while len(active_generations) < max_workers and ready_queue:
+            ready = ready_queue.popleft()
+            future = generation_executor.submit(
+                _run_prepared_opencode_solution,
+                ready.generator,
+                ready.prepared,
+            )
+            active_generations[future] = ready
+            dashboard_rows[ready.pending.row_index].llm = LLM_RUNNING_STATUS
         queue_prepare(prepare_executor)
 
+    def error_cleanup() -> None:
+        _cancel_batched_opencode_work(
+            runner,
+            solution_generators,
+            active_prepares,
+            active_generations,
+            ready_queue,
+            pending,
+            dashboard_rows,
+        )
+
     with ThreadPoolExecutor(
-        max_workers=1,
+        max_workers=max_workers,
         thread_name_prefix="benchmark-opencode-prepare",
     ) as prepare_executor, ThreadPoolExecutor(
-        max_workers=1,
+        max_workers=max_workers,
         thread_name_prefix="benchmark-llm",
     ) as generation_executor, ThreadPoolExecutor(
         max_workers=config.benchmark.evaluation_workers,
         thread_name_prefix="benchmark-eval",
     ) as evaluation_executor:
         queue_prepare(prepare_executor)
+        start_ready_generations(generation_executor, prepare_executor)
         dashboard.render()
 
         while (
-            pending_prepare is not None
-            or ready_generation is not None
-            or pending_generation is not None
+            active_prepares
+            or ready_queue
+            or active_generations
             or pending
         ):
-            start_ready_generation(generation_executor, prepare_executor)
-            active_futures: set[Future] = set(pending)
-            if pending_prepare is not None:
-                active_futures.add(pending_prepare)
-            if pending_generation is not None:
-                active_futures.add(pending_generation)
+            start_ready_generations(generation_executor, prepare_executor)
+            active_futures: set[Future] = set(pending) | set(active_prepares) | set(
+                active_generations
+            )
             if not active_futures:
                 continue
 
@@ -1043,73 +1048,57 @@ def _run_prepared_opencode_queue(
                 return_when=FIRST_COMPLETED,
             )
 
-            if (
-                pending_prepare is not None
-                and pending_prepare in completed_futures
-                and current_prepare is not None
-            ):
+            # --- Process completed prepares (batch) ---
+            for future in list(completed_futures):
+                if future not in active_prepares:
+                    continue
+                completed_futures.discard(future)
+                pending_gen = active_prepares.pop(future)
                 try:
-                    prepared = pending_prepare.result()
+                    prepared = future.result()
                 except Exception as exc:
-                    dashboard_rows[current_prepare.row_index].llm = "error"
-                    dashboard_rows[current_prepare.row_index].evaluation = "cancelled"
-                    _cancel_prepared_opencode_work(
-                        runner,
-                        solution_generators,
-                        pending_generation,
-                        pending_prepare,
-                        current_prepare,
-                        pending,
-                        ready_generation,
-                        dashboard_rows,
-                    )
+                    dashboard_rows[pending_gen.row_index].llm = "error"
+                    dashboard_rows[pending_gen.row_index].evaluation = "cancelled"
+                    error_cleanup()
                     dashboard.render()
                     raise RuntimeError(
                         f"OpenCode preparation failed for task "
-                        f"{current_prepare.task.id}: {exc}"
+                        f"{pending_gen.task.id}: {exc}"
                     ) from exc
-                generator = solution_generators[current_prepare.temperature_index]
+                generator = solution_generators[
+                    pending_gen.temperature_index
+                ]
                 if not isinstance(generator, OpenCodeGenerator):
                     raise RuntimeError(
                         "OpenCode prepare ahead requires OpenCode generators."
                     )
-                ready_generation = ReadyGeneration(
-                    pending=current_prepare,
-                    generator=generator,
-                    prepared=prepared,
-                )
-                dashboard_rows[current_prepare.row_index].llm = "ready"
-                pending_prepare = None
-                current_prepare = None
-                start_ready_generation(generation_executor, prepare_executor)
-                dashboard.render()
-
-            if (
-                pending_generation is not None
-                and pending_generation in completed_futures
-                and current_generation is not None
-            ):
-                try:
-                    generated = pending_generation.result()
-                except Exception as exc:
-                    dashboard_rows[current_generation.pending.row_index].llm = "error"
-                    dashboard_rows[
-                        current_generation.pending.row_index
-                    ].evaluation = "cancelled"
-                    _cancel_prepared_opencode_work(
-                        runner,
-                        solution_generators,
-                        pending_generation,
-                        pending_prepare,
-                        current_prepare,
-                        pending,
-                        ready_generation,
-                        dashboard_rows,
+                ready_queue.append(
+                    ReadyGeneration(
+                        pending=pending_gen,
+                        generator=generator,
+                        prepared=prepared,
                     )
+                )
+                dashboard_rows[pending_gen.row_index].llm = "ready"
+
+            # --- Process completed generations (batch) ---
+            for future in list(completed_futures):
+                if future not in active_generations:
+                    continue
+                completed_futures.discard(future)
+                ready = active_generations.pop(future)
+                try:
+                    generated = future.result()
+                except Exception as exc:
+                    dashboard_rows[ready.pending.row_index].llm = "error"
+                    dashboard_rows[
+                        ready.pending.row_index
+                    ].evaluation = "cancelled"
+                    error_cleanup()
                     dashboard.render()
                     raise RuntimeError(
                         f"LLM generation failed for task "
-                        f"{current_generation.pending.task.id}: {exc}"
+                        f"{ready.pending.task.id}: {exc}"
                     ) from exc
                 _queue_evaluation(
                     config,
@@ -1117,33 +1106,21 @@ def _run_prepared_opencode_queue(
                     evaluation_executor,
                     pending,
                     dashboard_rows,
-                    current_generation.pending,
+                    ready.pending,
                     generated,
                 )
-                pending_generation = None
-                current_generation = None
-                start_ready_generation(generation_executor, prepare_executor)
-                dashboard.render()
 
+            # --- Process completed evaluations ---
             _complete_evaluations(
                 config,
                 runner,
                 pending,
                 completed_futures,
-                {pending_generation: True} if pending_generation else None,
+                active_generations,
                 dashboard,
                 dashboard_rows,
                 task_scores_by_temperature,
-                error_cleanup=lambda: _cancel_prepared_opencode_work(
-                    runner,
-                    solution_generators,
-                    pending_generation,
-                    pending_prepare,
-                    current_prepare,
-                    pending,
-                    ready_generation,
-                    dashboard_rows,
-                ),
+                error_cleanup=error_cleanup,
             )
 
 
@@ -1178,32 +1155,33 @@ def _cancel_all_pending_work(
     runner.cancel()
 
 
-def _cancel_prepared_opencode_work(
+def _cancel_batched_opencode_work(
     runner: DockerRunner,
     solution_generators: list[SolutionGenerator],
-    pending_generation: Future[GeneratedSolution] | None,
-    pending_prepare: Future[PreparedOpenCodeGeneration] | None,
-    current_prepare: PendingGeneration | None,
+    active_prepares: dict[Future[PreparedOpenCodeGeneration], PendingGeneration],
+    active_generations: dict[Future[GeneratedSolution], ReadyGeneration],
+    ready_queue: deque[ReadyGeneration],
     pending_evaluations: dict[Future[TaskRunResult], PendingEvaluation],
-    ready_generation: ReadyGeneration | None,
     rows: list[DashboardRow],
 ) -> None:
-    if ready_generation is not None:
-        ready_generation.generator.cleanup_prepared(ready_generation.prepared)
-    if pending_prepare is not None:
-        pending_prepare.cancel()
-        if pending_prepare.done() and not pending_prepare.cancelled():
-            try:
-                prepared = pending_prepare.result()
-            except Exception:
-                prepared = None
-            if prepared is not None:
-                generator: SolutionGenerator | None = None
-                if current_prepare is not None:
-                    generator = solution_generators[current_prepare.temperature_index]
-                if isinstance(generator, OpenCodeGenerator):
-                    generator.cleanup_prepared(prepared)
-    _cancel_pending_work(runner, pending_generation, pending_evaluations, rows)
+    """Cancel every stage of the batched opencode pipeline."""
+    # Drain & clean up items sitting in the ready queue (prepared but not started)
+    for ready in ready_queue:
+        ready.generator.cleanup_prepared(ready.prepared)
+
+    # Cancel active prepares and clean up any that already finished
+    for future, pending_gen in active_prepares.items():
+        if not future.done():
+            future.cancel()
+            rows[pending_gen.row_index].llm = "cancelled"
+
+    # Cancel active generations (sessions still running)
+    for future in list(active_generations):
+        if not future.done():
+            future.cancel()
+
+    # Cancel evaluations
+    runner.cancel()
 
 
 def _queue_generation(
