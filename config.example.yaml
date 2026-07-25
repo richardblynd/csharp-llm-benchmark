@@ -56,7 +56,7 @@ opencode:
   # Required when benchmark.generator is "opencode".
   version: "1.18.5"
   package: "opencode-ai"
-  docker_image: "csharp-llm-benchmark-opencode"
+  docker_image: "csharp-llm-benchmark-agentic"
   cache_dir: ".cache/opencode"
   timeout_seconds: 900
   keep_timed_out_containers: false
@@ -83,10 +83,11 @@ opencode:
   build_fix_rounds: 3
   max_steps: 80
   network: "bridge"
-  # Optional model limits passed to OpenCode so it can track remaining context
-  # for OpenAI-compatible/custom providers. Omit when OpenCode can infer them.
-  # context_limit: 131072
-  # output_limit: 8192
+  # Optional model limits passed to the agent so it can track remaining context
+  # and cap single-response length. Omit (or set null) when the agent/provider
+  # can infer them automatically.
+  context_limit: 131072
+  output_limit: 8192
   compaction:
     auto: true
     prune: true
@@ -94,6 +95,20 @@ opencode:
   # Optional endpoint visible from inside the OpenCode container. When omitted,
   # localhost/127.0.0.1 in llm.base_url is translated to host.docker.internal.
   # container_base_url: "http://host.docker.internal:1234/v1"
+
+pi:
+  # Required when benchmark.generator is "pi".
+  version: "0.x.y"
+  timeout_seconds: 900
+  # Ask the agent to compile the workspace project after writing the file and
+  # fix any compiler errors before finishing (build-fix loop).
+  verify_build: true
+  # Cap on how many build-and-fix attempts the agent should make.
+  build_fix_rounds: 3
+  # Optional: model context window size (default: none, pi uses its own default).
+  # context_limit: 128000
+  # Optional: max tokens in a single completion (default: none, provider applies its own default).
+  # max_tokens: 32768
 
 docker:
   image: "csharp-llm-benchmark-dotnet8"

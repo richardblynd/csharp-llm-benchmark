@@ -2017,8 +2017,11 @@ def infer_quantization(run_name: str) -> str | None:
 
 
 def normalize_generator(value: Any) -> str:
-    if str(value or "llm").strip().lower() == "opencode":
+    text = str(value or "llm").strip().lower()
+    if text == "opencode":
         return "OpenCode"
+    if text == "pi":
+        return "Pi"
     return "LLM"
 
 

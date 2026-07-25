@@ -117,6 +117,16 @@ def write_summary(
             if config.benchmark.generator == "opencode"
             else None
         ),
+        "pi": (
+            {
+                "version": config.pi.version,
+                "timeout_seconds": config.pi.timeout_seconds,
+                "verify_build": config.pi.verify_build,
+                "build_fix_rounds": config.pi.build_fix_rounds,
+            }
+            if config.benchmark.generator == "pi"
+            else None
+        ),
         "score": {
             "earned_points": score.earned_points,
             "available_points": score.available_points,
@@ -455,6 +465,9 @@ def _format_temperature_list(temperatures: Any) -> str:
 
 
 def _format_generator(generator: Any) -> str:
-    if str(generator or "llm").lower() == "opencode":
+    text = str(generator or "llm").lower()
+    if text == "opencode":
         return "OpenCode"
+    if text == "pi":
+        return "Pi"
     return "LLM"

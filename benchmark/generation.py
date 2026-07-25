@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
-from benchmark.config import AppConfig, OpenCodeConfig
+from benchmark.config import AppConfig, OpenCodeConfig, PiConfig
 from benchmark.llm_client import (
     ExtractedCode,
     LlmClient,
@@ -62,12 +62,21 @@ class PreparedOpenCodeGeneration:
 
 
 @dataclass(frozen=True)
+class PiRunMetadata:
+    version_configured: str
+    session_time_seconds: float
+    exit_code: int
+    timed_out: bool = False
+
+
+@dataclass(frozen=True)
 class GeneratedSolution:
     extracted: ExtractedCode
     llm_response_time_seconds: float
     llm_usage: LlmUsage
     generator: str = "llm"
     opencode_metadata: OpenCodeRunMetadata | None = None
+    pi_metadata: PiRunMetadata | None = None
     infrastructure_error: str | None = None
 
 
@@ -199,7 +208,7 @@ class OpenCodeGenerator:
             create=self._opencode.precreate_container,
         )
         if self._opencode.precreate_container:
-            create = self._run_docker(
+            create = _run_docker_command(
                 docker_command,
                 timeout=30,
                 env={"OPENCODE_BENCHMARK_API_KEY": self._llm.api_key},
@@ -275,7 +284,7 @@ class OpenCodeGenerator:
         if attempt == 1 and prepared.precreated:
             run = self._start_precreated_opencode(prepared)
         elif attempt == 1:
-            run = self._run_docker(
+            run = _run_docker_command(
                 prepared.docker_command,
                 timeout=self._opencode.timeout_seconds,
                 env={"OPENCODE_BENCHMARK_API_KEY": self._llm.api_key},
@@ -301,7 +310,7 @@ class OpenCodeGenerator:
             container_name=container_name,
             create=False,
         )
-        return self._run_docker(
+        return _run_docker_command(
             docker_command,
             timeout=self._opencode.timeout_seconds,
             env={"OPENCODE_BENCHMARK_API_KEY": self._llm.api_key},
@@ -471,7 +480,7 @@ class OpenCodeGenerator:
                 "node_modules/.bin/opencode --version",
             ]
         )
-        return self._run_docker(
+        return _run_docker_command(
             [
                 "docker",
                 "run",
@@ -613,7 +622,7 @@ class OpenCodeGenerator:
             container_name=container_name,
             create=False,
         )
-        return self._run_docker(
+        return _run_docker_command(
             docker_command,
             timeout=self._opencode.timeout_seconds,
             env={"OPENCODE_BENCHMARK_API_KEY": self._llm.api_key},
@@ -703,7 +712,7 @@ class OpenCodeGenerator:
     ) -> CommandResult:
         timed_out = False
         try:
-            run = self._run_docker(
+            run = _run_docker_command(
                 ["docker", "start", "--attach", prepared.container_name],
                 timeout=self._opencode.timeout_seconds,
                 env={"OPENCODE_BENCHMARK_API_KEY": self._llm.api_key},
@@ -758,57 +767,377 @@ class OpenCodeGenerator:
             return self._opencode.container_base_url.rstrip("/")
         return translate_base_url_for_container(self._llm.base_url)
 
-    def _run_docker(
-        self,
-        docker_command: list[str],
-        *,
-        timeout: int | float | None = None,
-        env: dict[str, str] | None = None,
-        keep_on_timeout: bool = False,
-    ) -> CommandResult:
-        subprocess_env = os.environ.copy()
-        if env:
-            subprocess_env.update(env)
-        try:
-            completed = subprocess.run(
-                docker_command,
+def _run_docker_command(
+    docker_command: list[str],
+    *,
+    timeout: int | float | None = None,
+    env: dict[str, str] | None = None,
+    keep_on_timeout: bool = False,
+) -> CommandResult:
+    """Run a Docker command and return a CommandResult."""
+    subprocess_env = os.environ.copy()
+    if env:
+        subprocess_env.update(env)
+    try:
+        completed = subprocess.run(
+            docker_command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=subprocess_env,
+        )
+        return CommandResult(
+            exit_code=completed.returncode,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+            container_name=_extract_docker_container_name(docker_command),
+        )
+    except subprocess.TimeoutExpired as exc:
+        container_name = _extract_docker_container_name(docker_command)
+        if container_name and not keep_on_timeout:
+            subprocess.run(
+                ["docker", "rm", "-f", container_name],
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=timeout,
-                env=subprocess_env,
+                timeout=10,
             )
-            return CommandResult(
-                exit_code=completed.returncode,
-                stdout=completed.stdout,
-                stderr=completed.stderr,
-                container_name=_extract_docker_container_name(docker_command),
-            )
-        except subprocess.TimeoutExpired as exc:
-            container_name = _extract_docker_container_name(docker_command)
-            if container_name and not keep_on_timeout:
-                subprocess.run(
-                    ["docker", "rm", "-f", container_name],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-            return CommandResult(
-                exit_code=124,
-                stdout=_decode_output(exc.stdout),
-                stderr=_decode_output(exc.stderr),
-                timed_out=True,
-                container_name=container_name if keep_on_timeout else None,
-            )
-        except OSError as exc:
-            return CommandResult(exit_code=127, stdout="", stderr=str(exc))
+        return CommandResult(
+            exit_code=124,
+            stdout=_decode_output(exc.stdout),
+            stderr=_decode_output(exc.stderr),
+            timed_out=True,
+            container_name=container_name if keep_on_timeout else None,
+        )
+    except OSError as exc:
+        return CommandResult(exit_code=127, stdout="", stderr=str(exc))
 
 
 def create_solution_generator(config: AppConfig) -> SolutionGenerator:
+    if config.benchmark.generator == "pi":
+        return PiGenerator(config)
     if config.benchmark.generator == "opencode":
         return OpenCodeGenerator(config)
     return DirectLlmGenerator(config)
+
+
+class PiGenerator:
+    _install_lock: ClassVar[threading.Lock] = threading.Lock()
+    _install_cache: ClassVar[dict[tuple[str, ...], float]] = {}
+
+    _PI_DOCKER_IMAGE = "csharp-llm-benchmark-agentic"
+    _PI_PACKAGE = "@earendil-works/pi-coding-agent"
+    _DEFAULT_CACHE_DIR = Path(".cache/pi")
+
+    def __init__(self, config: AppConfig):
+        if config.pi.version is None:
+            raise ValueError("pi.version is required for the pi generator")
+        self._llm = config.llm
+        self._pi = config.pi
+        self._install_time_seconds: float | None = None
+
+    def generate(self, task: Task, task_dir: Path) -> GeneratedSolution:
+        # Ensure pi is installed in cache
+        if self._install_time_seconds is None:
+            install_result = self._ensure_pi_installed()
+            self._install_time_seconds = install_result
+
+        prompt = self._build_user_prompt(task)
+        (task_dir / "prompt.md").write_text(task.prompt, encoding="utf-8")
+        (task_dir / "pi-user-prompt.md").write_text(prompt, encoding="utf-8")
+
+        # Prepare workspace inside task dir
+        workspace = task_dir / "pi-workspace"
+        if workspace.exists():
+            shutil.rmtree(workspace)
+        self._prepare_workspace(task, workspace, prompt)
+
+        # Build system prompt file and models.json into .pi directory
+        pi_config_dir = workspace / ".pi"
+        pi_config_dir.mkdir(parents=True, exist_ok=True)
+        (pi_config_dir / "SYSTEM.md").write_text(
+            _build_pi_system_prompt(), encoding="utf-8"
+        )
+        self._write_models_json(pi_config_dir)
+
+        # Build container home with models.json for provider config
+        home_dir = task_dir / "pi-home"
+        home_dir.mkdir(parents=True, exist_ok=True)
+        pi_agent_home = home_dir / ".pi" / "agent"
+        pi_agent_home.mkdir(parents=True, exist_ok=True)
+        self._write_models_json(pi_agent_home)
+
+        container_name = _container_name("task", task.id, include_prefix=False)
+
+        # Run pi in docker
+        session_started_at = time.perf_counter()
+        run = self._run_pi_session(
+            workspace,
+            home_dir,
+            prompt,
+            container_name=container_name,
+        )
+        session_time_seconds = time.perf_counter() - session_started_at
+
+        # Write event logs
+        (task_dir / "response.md").write_text(run.stdout, encoding="utf-8")
+        (task_dir / "pi-events.jsonl").write_text(run.stdout, encoding="utf-8")
+        if run.stderr:
+            (task_dir / "pi-stderr.log").write_text(run.stderr, encoding="utf-8")
+
+        return self._build_solution(task, task_dir, workspace, run, session_time_seconds)
+
+    # -- internal helpers ------------------------------------------------------
+
+    def _ensure_pi_installed(self) -> float:
+        """Install pi npm package into the Docker cache directory.
+
+        Uses a class-level lock so only one install runs at a time across
+        threads, and caches the result keyed by package/version/config.
+
+        Returns install time in seconds (0 if served from cache).
+        """
+        cache_key = self._pi_install_cache_key()
+        with self._install_lock:
+            cached = self._install_cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+            install_dir = self._pi_install_dir()
+            install_dir.mkdir(parents=True, exist_ok=True)
+            package_spec = f"{self._PI_PACKAGE}@{self._pi.version}"
+
+            script = "\n".join(
+                [
+                    "set -eu",
+                    "cd /pi-install",
+                    f'expected={shlex.quote(package_spec)}',
+                    'actual="$(cat .pi-package 2>/dev/null || true)"',
+                    'if [ "$actual" != "$expected" ]; then',
+                    "  rm -rf node_modules package.json package-lock.json .pi-package",
+                    "  npm init -y >/dev/null",
+                    f'  npm install --no-audit --no-fund --silent {shlex.quote(package_spec)}',
+                    '  printf "%s\\n" "$expected" > .pi-package',
+                    "fi",
+                ]
+            )
+
+            start = time.perf_counter()
+            _run_docker_command(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--name",
+                    _container_name("install", self._pi.version or "unknown"),
+                    "--network",
+                    "bridge",
+                    "--user",
+                    "root",
+                    "--mount",
+                    f"type=bind,source={install_dir.resolve()},target=/pi-install",
+                    self._PI_DOCKER_IMAGE,
+                    "/bin/sh",
+                    "-lc",
+                    script,
+                ],
+                timeout=self._pi.timeout_seconds,
+            )
+            elapsed = time.perf_counter() - start
+            self._install_cache[cache_key] = elapsed
+            return elapsed
+
+    def _prepare_workspace(
+        self, task: Task, workspace: Path, prompt: str
+    ) -> None:
+        """Copy public files into the agentic workspace."""
+        if workspace.exists():
+            shutil.rmtree(workspace)
+        workspace.mkdir(parents=True)
+        for public_file in task.public_files:
+            if _is_generated_file(task, public_file):
+                continue
+            source = task.template_dir / public_file
+            destination = workspace / public_file
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+        (workspace / "BENCHMARK_PROMPT.md").write_text(prompt, encoding="utf-8")
+
+    def _build_user_prompt(self, task: Task) -> str:
+        sections = [
+            _task_contract(task),
+            _workspace_summary(task),
+            _pi_workspace_generation_instructions(task),
+        ]
+        if self._pi.verify_build:
+            verification = _self_verification_instructions(
+                task, self._pi.build_fix_rounds
+            )
+            if verification is not None:
+                sections.append(verification)
+        sections.append(_build_pi_prompt_suffix(self._pi))
+        return "\n\n".join(sections)
+
+    def _write_models_json(self, target_dir: Path) -> None:
+        """Write models.json with a custom OpenAI-compatible provider."""
+        model = self._llm.model
+        container_base_url = translate_base_url_for_container(self._llm.base_url)
+        entry: dict[str, Any] = {"id": model}
+        if self._pi.context_limit is not None:
+            entry["contextWindow"] = self._pi.context_limit
+        if self._pi.max_tokens is not None:
+            entry["maxTokens"] = self._pi.max_tokens
+        payload = {
+            "providers": {
+                "benchmark": {
+                    "baseUrl": f"{container_base_url}/v1",
+                    "api": "openai-completions",
+                    "apiKey": "$OPENCODE_BENCHMARK_API_KEY",
+                    "compat": {
+                        "supportsDeveloperRole": False,
+                        "supportsReasoningEffort": False,
+                        "supportsUsageInStreaming": True,
+                    },
+                    "models": [entry],
+                },
+            },
+        }
+        (target_dir / "models.json").write_text(
+            json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+        )
+
+    def _run_pi_session(
+        self,
+        workspace: Path,
+        home_dir: Path,
+        prompt: str,
+        *,
+        container_name: str,
+    ) -> CommandResult:
+        """Run pi --mode json inside Docker and return command result."""
+        install_dir = self._pi_install_dir()
+        script = (
+            "set -eu\n"
+            "cd /workspace\n"
+            'prompt="$(cat /workspace/BENCHMARK_PROMPT.md)"\n'
+            "/pi-install/node_modules/.bin/pi "
+            "--mode json "
+            "--provider benchmark "
+            f"--model {self._llm.model} "
+            '"$prompt"'
+        )
+
+        return _run_docker_command(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--name",
+                container_name,
+                "--network",
+                "bridge",
+                "--user",
+                "benchmark",
+                "--add-host",
+                "host.docker.internal:host-gateway",
+                "--env",
+                "OPENCODE_BENCHMARK_API_KEY",
+                "--env",
+                f"PI_CODING_AGENT_DIR=/home/benchmark/.pi/agent",
+                "--mount",
+                f"type=bind,source={install_dir.resolve()},target=/pi-install",
+                "--mount",
+                f"type=bind,source={workspace.resolve()},target=/workspace",
+                "--mount",
+                f"type=bind,source={home_dir.resolve()},target=/home/benchmark",
+                self._PI_DOCKER_IMAGE,
+                "/bin/sh",
+                "-lc",
+                script,
+            ],
+            timeout=self._pi.timeout_seconds,
+        )
+
+    def _build_solution(
+        self,
+        task: Task,
+        task_dir: Path,
+        workspace: Path,
+        run: CommandResult,
+        session_time_seconds: float,
+    ) -> GeneratedSolution:
+        """Interpret a finished pi session and produce a GeneratedSolution."""
+        metadata = PiRunMetadata(
+            version_configured=self._pi.version or "unknown",
+            session_time_seconds=session_time_seconds,
+            exit_code=run.exit_code,
+            timed_out=getattr(run, "timed_out", False),
+        )
+
+        # Parse token usage from pi events JSONL
+        usage = _parse_pi_usage(run.stdout)
+
+        generated_path = workspace / task.generated_file
+        if not generated_path.exists():
+            return GeneratedSolution(
+                extracted=ExtractedCode(
+                    code=None,
+                    warnings=(),
+                    error=(
+                        f"Pi did not create the expected generated file "
+                        f"{task.generated_file}."
+                    ),
+                ),
+                llm_response_time_seconds=session_time_seconds,
+                llm_usage=usage,
+                generator="pi",
+                pi_metadata=metadata,
+            )
+
+        code = generated_path.read_text(encoding="utf-8")
+        required_public_class = (
+            task.solution_class if task.difficulty == "easy" else None
+        )
+        extracted = extract_solution_code(
+            code,
+            required_public_class=required_public_class,
+            preserve_unfenced_code=True,
+        )
+        warnings = list(extracted.warnings)
+        if run.exit_code != 0:
+            warnings.append(f"Pi exited with code {run.exit_code}.")
+        extracted = ExtractedCode(
+            code=extracted.code,
+            warnings=tuple(warnings),
+            error=extracted.error,
+        )
+
+        if extracted.code is not None:
+            result_generated_path = task_dir / task.generated_file
+            result_generated_path.parent.mkdir(parents=True, exist_ok=True)
+            result_generated_path.write_text(extracted.code, encoding="utf-8")
+
+        return GeneratedSolution(
+            extracted=extracted,
+            llm_response_time_seconds=session_time_seconds,
+            llm_usage=usage,
+            generator="pi",
+            pi_metadata=metadata,
+        )
+
+    def _pi_install_cache_key(self) -> tuple[str, ...]:
+        return (
+            self._PI_PACKAGE,
+            self._pi.version or "",
+            str(self._DEFAULT_CACHE_DIR.resolve()),
+            self._PI_DOCKER_IMAGE,
+            str(self._pi.timeout_seconds),
+        )
+
+    def _pi_install_dir(self) -> Path:
+        version_key = _safe_cache_key(self._pi.version or "unknown")
+        return self._DEFAULT_CACHE_DIR / "pi-coding-agent" / version_key
 
 
 def opencode_metadata_to_dict(
@@ -838,6 +1167,36 @@ def translate_base_url_for_container(base_url: str) -> str:
 
 
 def _parse_opencode_usage(text: str) -> LlmUsage:
+    totals = {
+        "prompt_tokens": None,
+        "completion_tokens": None,
+        "total_tokens": None,
+        "reasoning_tokens": None,
+    }
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        _collect_usage(payload, totals)
+    return LlmUsage(
+        prompt_tokens=totals["prompt_tokens"],
+        completion_tokens=totals["completion_tokens"],
+        total_tokens=totals["total_tokens"],
+        reasoning_tokens=totals["reasoning_tokens"],
+    )
+
+
+def _parse_pi_usage(text: str) -> LlmUsage:
+    """Parse token usage from pi JSON mode events.
+
+    Pi emits `message_end`/`agent_end` with `usage` objects containing
+    `input`, `output`, and other fields. The recursive `_collect_usage`
+    already maps these to our canonical names.
+    """
     totals = {
         "prompt_tokens": None,
         "completion_tokens": None,
@@ -934,12 +1293,37 @@ def _collect_usage(value: Any, totals: dict[str, int | None]) -> None:
             _collect_usage(child, totals)
 
 
-def _build_agent_prompt_suffix(config: OpenCodeConfig) -> str:
+def _build_opencode_prompt_suffix(config: OpenCodeConfig) -> str:
     return (
         "Work non-interactively. Do not ask the user questions. "
         "Keep the solution focused and finish once the generated file is complete "
         "and the project builds cleanly, "
         f"staying within {config.max_steps} tool steps."
+    )
+
+
+def _build_pi_prompt_suffix(config: PiConfig) -> str:
+    return (
+        "Work non-interactively. Do not ask the user questions. "
+        "Keep the solution focused and finish once the generated file is complete "
+        "and the project builds cleanly."
+    )
+
+
+def _build_pi_system_prompt() -> str:
+    return _opencode_solution_rules()
+
+
+def _pi_workspace_generation_instructions(task: Task) -> str:
+    return (
+        "Workspace instructions:\n"
+        f"- Create exactly the required generated file: `{task.generated_file}`.\n"
+        "- The generated file is intentionally not present in the workspace; write "
+        "it from the task contract instead of editing an existing source file.\n"
+        "- Write the file directly in this workspace.\n"
+        "- Do not create or modify any other source, project, or package files "
+        "unless the task explicitly requires it.\n"
+        "- Ensure the final code is valid C# for .NET 8."
     )
 
 
@@ -1002,7 +1386,7 @@ def _safe_cache_key(value: str) -> str:
 
 def _container_name(prefix: str, label: str, *, include_prefix: bool = True) -> str:
     safe_label = _safe_cache_key(label).lower()[:40]
-    parts = ["csharp-llm-benchmark-opencode"]
+    parts = ["csharp-llm-benchmark-agentic"]
     if include_prefix:
         parts.append(prefix)
     parts.extend([safe_label, uuid.uuid4().hex[:12]])
@@ -1099,5 +1483,5 @@ def _agent_prompt(task: Task, config: OpenCodeConfig) -> str:
         verification = _self_verification_instructions(task, config.build_fix_rounds)
         if verification is not None:
             sections.append(verification)
-    sections.append(_build_agent_prompt_suffix(config))
+    sections.append(_build_opencode_prompt_suffix(config))
     return "\n\n".join(sections)

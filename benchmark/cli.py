@@ -7,7 +7,7 @@ import sys
 import unicodedata
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 from benchmark.config import (
@@ -348,7 +348,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--generator",
-        choices=("llm", "opencode"),
+        choices=("llm", "opencode", "pi"),
         help="Solution generator to use. Defaults to benchmark.generator.",
     )
     run.add_argument(
@@ -359,6 +359,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--opencode-timeout-seconds",
         type=int,
         help="Timeout for OpenCode install and session commands.",
+    )
+    run.add_argument(
+        "--pi-version",
+        help="Pinned pi package version to install for pi runs.",
+    )
+    run.add_argument(
+        "--pi-timeout-seconds",
+        type=int,
+        help="Timeout for pi session commands.",
     )
     run.add_argument("--task-id", help="Run only one task by id, e.g. easy-001")
     run.add_argument(
@@ -445,6 +454,8 @@ def _run(args: argparse.Namespace) -> int:
         generator=args.generator,
         opencode_version=args.opencode_version,
         opencode_timeout_seconds=args.opencode_timeout_seconds,
+        pi_version=args.pi_version,
+        pi_timeout_seconds=args.pi_timeout_seconds,
         top_p=args.top_p,
         min_p=args.min_p,
         top_k=args.top_k,
@@ -769,7 +780,15 @@ def _run_task_major_temperatures(
                 for temperature in temperatures
             )
         )
-    if config.benchmark.generator == "opencode":
+    if config.benchmark.generator == "pi":
+        header_lines.append(f"Pi version: {config.pi.version}")
+        header_lines.append(
+            f"Pi timeout: {config.pi.timeout_seconds}s"
+        )
+        header_lines.append(
+            f"Pi verify build: {'enabled' if config.pi.verify_build else 'disabled'}"
+        )
+    elif config.benchmark.generator == "opencode":
         header_lines.append(f"OpenCode version: {config.opencode.version}")
         header_lines.append(
             "OpenCode prepare ahead: "
@@ -1267,6 +1286,11 @@ def _queue_evaluation(
         generator=generated.generator,
         opencode_metadata=opencode_metadata_to_dict(
             generated.opencode_metadata
+        ),
+        pi_metadata=(
+            asdict(generated.pi_metadata)
+            if generated.pi_metadata is not None
+            else None
         ),
         temperature=current_generation.temperature,
         generation_infrastructure_error=generated.infrastructure_error,

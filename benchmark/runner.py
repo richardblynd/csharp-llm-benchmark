@@ -46,6 +46,7 @@ class TaskRunResult:
     infrastructure_error: str | None = None
     generator: str = "llm"
     opencode_metadata: dict[str, Any] | None = None
+    pi_metadata: dict[str, Any] | None = None
     temperature: float | None = None
 
 
@@ -73,12 +74,14 @@ class DockerRunner:
         llm_usage: LlmUsage,
         generator: str = "llm",
         opencode_metadata: dict[str, Any] | None = None,
+        pi_metadata: dict[str, Any] | None = None,
         temperature: float | None = None,
         generation_infrastructure_error: str | None = None,
     ) -> TaskRunResult:
         metadata = {
             "generator": generator,
             "opencode_metadata": opencode_metadata,
+            "pi_metadata": pi_metadata,
             "temperature": temperature,
         }
         if generation_infrastructure_error is not None:
@@ -140,6 +143,7 @@ class DockerRunner:
                         llm_usage=llm_usage,
                         generator=generator,
                         opencode_metadata=opencode_metadata,
+                        pi_metadata=pi_metadata,
                         temperature=temperature,
                     )
 
@@ -154,6 +158,7 @@ class DockerRunner:
                         llm_usage=llm_usage,
                         generator=generator,
                         opencode_metadata=opencode_metadata,
+                        pi_metadata=pi_metadata,
                         temperature=temperature,
                     )
 
@@ -175,6 +180,7 @@ class DockerRunner:
                         llm_usage=llm_usage,
                         generator=generator,
                         opencode_metadata=opencode_metadata,
+                        pi_metadata=pi_metadata,
                         temperature=temperature,
                     )
 
@@ -197,6 +203,7 @@ class DockerRunner:
                         llm_usage=llm_usage,
                         generator=generator,
                         opencode_metadata=opencode_metadata,
+                        pi_metadata=pi_metadata,
                         temperature=temperature,
                     )
                 if build.timed_out:
@@ -209,6 +216,7 @@ class DockerRunner:
                         llm_usage=llm_usage,
                         generator=generator,
                         opencode_metadata=opencode_metadata,
+                        pi_metadata=pi_metadata,
                         temperature=temperature,
                     )
                 if build.exit_code != 0:
@@ -246,6 +254,7 @@ class DockerRunner:
                         llm_usage=llm_usage,
                         generator=generator,
                         opencode_metadata=opencode_metadata,
+                        pi_metadata=pi_metadata,
                         temperature=temperature,
                     )
                 if test.timed_out:
@@ -259,6 +268,7 @@ class DockerRunner:
                         llm_usage=llm_usage,
                         generator=generator,
                         opencode_metadata=opencode_metadata,
+                        pi_metadata=pi_metadata,
                         temperature=temperature,
                     )
 
@@ -278,6 +288,7 @@ class DockerRunner:
                         llm_usage=llm_usage,
                         generator=generator,
                         opencode_metadata=opencode_metadata,
+                        pi_metadata=pi_metadata,
                         temperature=temperature,
                     )
 
@@ -559,6 +570,7 @@ class DockerRunner:
         llm_usage: LlmUsage,
         generator: str = "llm",
         opencode_metadata: dict[str, Any] | None = None,
+        pi_metadata: dict[str, Any] | None = None,
         temperature: float | None = None,
     ) -> TaskRunResult:
         return TaskRunResult(
@@ -575,6 +587,7 @@ class DockerRunner:
             infrastructure_error=message,
             generator=generator,
             opencode_metadata=opencode_metadata,
+            pi_metadata=pi_metadata,
             temperature=temperature,
         )
 
@@ -626,6 +639,7 @@ def write_result_json(
         "infrastructure_error": result.infrastructure_error,
         "generator": result.generator,
         "opencode": result.opencode_metadata,
+        "pi": result.pi_metadata,
         "temperature": result.temperature,
         "build_exit_code": result.build.exit_code if result.build else None,
         "test_exit_code": result.test.exit_code if result.test else None,

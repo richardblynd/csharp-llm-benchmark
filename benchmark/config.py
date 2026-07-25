@@ -69,7 +69,7 @@ class DockerConfig:
 class OpenCodeConfig:
     version: str | None = None
     package: str = "opencode-ai"
-    docker_image: str = "csharp-llm-benchmark-opencode"
+    docker_image: str = "csharp-llm-benchmark-agentic"
     cache_dir: Path = Path(".cache/opencode")
     timeout_seconds: int = 900
     keep_timed_out_containers: bool = False
@@ -89,11 +89,22 @@ class OpenCodeConfig:
 
 
 @dataclass(frozen=True)
+class PiConfig:
+    version: str | None = None
+    timeout_seconds: int = 900
+    verify_build: bool = True
+    build_fix_rounds: int = 3
+    context_limit: int | None = None
+    max_tokens: int | None = None
+
+
+@dataclass(frozen=True)
 class AppConfig:
     llm: LlmConfig = field(default_factory=LlmConfig)
     benchmark: BenchmarkConfig = field(default_factory=BenchmarkConfig)
     docker: DockerConfig = field(default_factory=DockerConfig)
     opencode: OpenCodeConfig = field(default_factory=OpenCodeConfig)
+    pi: PiConfig = field(default_factory=PiConfig)
 
 
 def load_config(path: Path | None) -> AppConfig:
@@ -106,6 +117,7 @@ def load_config(path: Path | None) -> AppConfig:
     docker_data = data.get("docker", {})
     opencode_data = data.get("opencode", {})
     opencode_compaction_data = opencode_data.get("compaction", {})
+    pi_data = data.get("pi", {})
     if not isinstance(opencode_compaction_data, dict):
         raise ValueError("opencode.compaction must be a mapping when set")
 
@@ -315,6 +327,31 @@ def load_config(path: Path | None) -> AppConfig:
                 "opencode.compaction.reserved",
             ),
         ),
+        pi=PiConfig(
+            version=_optional_string(pi_data.get("version")),
+            timeout_seconds=_positive_int(
+                pi_data.get("timeout_seconds", PiConfig.timeout_seconds),
+                "pi.timeout_seconds",
+            ),
+            verify_build=_bool_value(
+                pi_data.get("verify_build", PiConfig.verify_build),
+                "pi.verify_build",
+            ),
+            build_fix_rounds=_positive_int(
+                pi_data.get("build_fix_rounds", PiConfig.build_fix_rounds),
+                "pi.build_fix_rounds",
+            ),
+            context_limit=(
+                _optional_positive_int(pi_data.get("context_limit"))
+                if pi_data.get("context_limit") is not None
+                else PiConfig.context_limit
+            ),
+            max_tokens=(
+                _optional_positive_int(pi_data.get("max_tokens"))
+                if pi_data.get("max_tokens") is not None
+                else PiConfig.max_tokens
+            ),
+        ),
     )
     _validate_config(config)
     return config
@@ -336,6 +373,8 @@ def apply_cli_overrides(
     generator: str | None = None,
     opencode_version: str | None = None,
     opencode_timeout_seconds: int | None = None,
+    pi_version: str | None = None,
+    pi_timeout_seconds: int | None = None,
     top_p: float | None = None,
     min_p: float | None = None,
     top_k: int | None = None,
@@ -451,6 +490,22 @@ def apply_cli_overrides(
             compaction_prune=config.opencode.compaction_prune,
             compaction_reserved=config.opencode.compaction_reserved,
         ),
+        pi=PiConfig(
+            version=(
+                _optional_string(pi_version)
+                if pi_version is not None
+                else config.pi.version
+            ),
+            timeout_seconds=(
+                _positive_int(pi_timeout_seconds, "pi.timeout_seconds")
+                if pi_timeout_seconds is not None
+                else config.pi.timeout_seconds
+            ),
+            verify_build=config.pi.verify_build,
+            build_fix_rounds=config.pi.build_fix_rounds,
+            context_limit=config.pi.context_limit,
+            max_tokens=config.pi.max_tokens,
+        ),
     )
     _validate_config(updated)
     return updated
@@ -543,8 +598,8 @@ def _positive_float(value: Any, name: str) -> float:
 
 def _generator_value(value: Any, name: str) -> str:
     text = str(value).strip().lower()
-    if text not in {"llm", "opencode"}:
-        raise ValueError(f"{name} must be 'llm' or 'opencode'")
+    if text not in {"llm", "opencode", "pi"}:
+        raise ValueError(f"{name} must be 'llm', 'opencode', or 'pi'")
     return text
 
 
@@ -552,6 +607,10 @@ def _validate_config(config: AppConfig) -> None:
     if config.benchmark.generator == "opencode" and not config.opencode.version:
         raise ValueError(
             "opencode.version is required when benchmark.generator is 'opencode'"
+        )
+    if config.benchmark.generator == "pi" and not config.pi.version:
+        raise ValueError(
+            "pi.version is required when benchmark.generator is 'pi'"
         )
 
 
