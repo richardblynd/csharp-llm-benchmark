@@ -17,6 +17,7 @@ def create_run_dir(
     model_label: str,
     quantization: str,
     kv_cache_quantization: str | None = None,
+    generator_mode: str = "LLM",
 ) -> Path:
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     parts: list[str] = [
@@ -24,12 +25,11 @@ def create_run_dir(
         _format_run_dir_label(model_label),
         _format_run_dir_label(quantization),
     ]
+    base = "_".join(parts)
     if kv_cache_quantization is not None and str(kv_cache_quantization).strip():
-        base = "_".join(parts)
-        run_dir_name = f"{base}@{_format_run_dir_label(str(kv_cache_quantization))}"
-        run_dir = output_dir / run_dir_name
-    else:
-        run_dir = output_dir / "_".join(parts)
+        base = f"{base}@{_format_run_dir_label(str(kv_cache_quantization))}"
+    run_dir_name = f"{base}-{generator_mode.upper()}"
+    run_dir = output_dir / run_dir_name
     run_dir.mkdir(parents=True, exist_ok=False)
     (run_dir / "tasks").mkdir()
     return run_dir

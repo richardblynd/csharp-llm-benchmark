@@ -475,6 +475,7 @@ def _run(args: argparse.Namespace) -> int:
             model_label=config.llm.effective_model_label,
             quantization=config.llm.quantization,
             kv_cache_quantization=config.llm.kv_cache_quantization,
+            generator_mode=config.benchmark.generator.upper(),
         )
 
     discovery_runs: list[TemperatureRun] | None = None
