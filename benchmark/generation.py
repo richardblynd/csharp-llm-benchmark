@@ -1247,7 +1247,9 @@ class PiGenerator:
 
     def _build_user_prompt(self, task: Task) -> str:
         sections = [
-            _task_contract(task),
+            "You are generating a C# source file in a project workspace.",
+            f"Follow these solution rules:\n{_opencode_solution_rules()}\n- The main public class must be named `{task.solution_class}`.",
+            "Task:\n" + _task_contract(task),
             _workspace_summary(task),
             _pi_workspace_generation_instructions(task),
         ]
