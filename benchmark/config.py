@@ -649,6 +649,34 @@ def _validate_config(config: AppConfig) -> None:
         raise ValueError(
             "pi.version is required when benchmark.generator is 'pi'"
         )
+    _validate_output_dir(config.benchmark.output_dir)
+
+
+def _validate_output_dir(output_dir: Path) -> None:
+    """Reject output directories that could accidentally target the project root."""
+    try:
+        resolved = output_dir.resolve()
+    except (OSError, RuntimeError):
+        return  # non-existent path — let it fail later when mkdir is attempted
+
+    # Reject empty or current-directory paths that point to the CWD
+    if resolved == Path.cwd().resolve():
+        raise ValueError(
+            f"benchmark.output_dir ({output_dir}) resolves to the current working "
+            f"directory. This would place all benchmark artifacts (including dirs "
+            f"that are rmtree'd on re-run) inside your project root. Choose a named "
+            f"subdirectory instead, e.g. 'results'."
+        )
+
+    # Reject paths that resolve to the parent of CWD or above
+    try:
+        resolved.relative_to(Path.cwd().resolve())
+    except ValueError:
+        raise ValueError(
+            f"benchmark.output_dir ({output_dir}) resolves outside the project "
+            f"directory. This is unsafe — benchmark operations may delete files. "
+            f"Use a path inside the project instead."
+        )
 
 
 def _optional_positive_int(value: Any, name: str) -> int | None:

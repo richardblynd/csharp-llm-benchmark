@@ -15,6 +15,7 @@ from typing import Any, ClassVar, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 from benchmark.config import AppConfig, OpenCodeConfig, PiConfig
+from benchmark.fsafety import cache_safety_root, safe_rmtree as _safe_rmtree
 from benchmark.llm_client import (
     ExtractedCode,
     LlmClient,
@@ -515,7 +516,7 @@ class OpenCodeGenerator:
                 "--user",
                 "root",
                 "--mount",
-                f"type=bind,source={install_dir.resolve()},target=/opencode-install",
+                f"type=bind,source={install_dir.resolve()},target=/opencode-install,readonly",
                 self._opencode.docker_image,
                 "/bin/sh",
                 "-lc",
@@ -540,7 +541,7 @@ class OpenCodeGenerator:
             return
         home_dir = prepared.task_dir / "opencode-home"
         if home_dir.exists():
-            shutil.rmtree(home_dir, ignore_errors=True)
+            _safe_rmtree(home_dir, safe_parent=prepared.task_dir, ignore_errors=True)
 
     def _build_agent_prompt(self, task: Task) -> str:
         return _agent_prompt(task, self._opencode)
@@ -548,7 +549,7 @@ class OpenCodeGenerator:
     def _prepare_workspace(self, task: Task, task_dir: Path, prompt: str) -> Path:
         workspace = task_dir / "opencode-workspace"
         if workspace.exists():
-            shutil.rmtree(workspace)
+            _safe_rmtree(workspace, safe_parent=task_dir)
         workspace.mkdir(parents=True)
         for public_file in task.public_files:
             if _is_generated_file(task, public_file):
@@ -716,7 +717,7 @@ class OpenCodeGenerator:
                 "--add-host",
                 "host.docker.internal:host-gateway",
                 "--mount",
-                f"type=bind,source={install_dir.resolve()},target=/opencode-install",
+                f"type=bind,source={install_dir.resolve()},target=/opencode-install,readonly",
                 "--mount",
                 f"type=bind,source={workspace.resolve()},target=/workspace",
                 "--mount",
@@ -802,14 +803,28 @@ def _ensure_is_directory(path: Path, *, retries: int = 3) -> None:
 
     This helper removes stale empty-file placeholders and retries to handle
     race conditions between parallel Docker containers.
+
+    Safety constraint: files are only removed if they live inside the resolved
+    cache root (the first component of *path*). This prevents accidental deletion
+    of legitimate project files when a path segment is mistakenly created as a
+    file by Docker bind mounts on Windows/WSL.
     """
     abs_path = path.resolve()
+    # Determine the safe root — only unlink descendants of this ancestor.
+    cache_root = cache_safety_root(abs_path)
     for attempt in range(1, retries + 1):
         # Check parent chain — Docker can create intermediate segments as files too
         for ancestor in path.parents:
             if not ancestor.exists():
                 break
-            if ancestor.is_file():
+            if ancestor.is_file() and cache_root is not None:
+                try:
+                    ancestor.resolve().relative_to(cache_root)
+                except ValueError:
+                    raise RuntimeError(
+                        f"Refusing to unlink file placeholder outside cache root: "
+                        f"{ancestor.resolve()} (root: {cache_root})"
+                    )
                 ancestor.unlink()
                 print(
                     f"  [docker-fix] removed stale file placeholder: {ancestor.resolve()}",
@@ -817,6 +832,14 @@ def _ensure_is_directory(path: Path, *, retries: int = 3) -> None:
                 )
         # Handle the target itself
         if path.is_file():
+            if cache_root is not None:
+                try:
+                    abs_path.relative_to(cache_root)
+                except ValueError:
+                    raise RuntimeError(
+                        f"Refusing to unlink install dir outside cache root: "
+                        f"{abs_path} (root: {cache_root})"
+                    )
             print(
                 f"  [docker-fix] removing stale install dir (file): {abs_path} "
                 f"(attempt {attempt}/{retries})",
@@ -831,6 +854,7 @@ def _ensure_is_directory(path: Path, *, retries: int = 3) -> None:
                 path.unlink()
                 continue  # retry mkdir after unlinking
             raise
+
 
 def _run_docker_command(
     docker_command: list[str],
@@ -1142,7 +1166,7 @@ class PiGenerator:
         """Copy public files into the agentic workspace. Returns workspace path."""
         workspace = task_dir / "pi-workspace"
         if workspace.exists():
-            shutil.rmtree(workspace)
+            _safe_rmtree(workspace, safe_parent=task_dir)
         workspace.mkdir(parents=True)
         for public_file in task.public_files:
             if _is_generated_file(task, public_file):
@@ -1254,7 +1278,7 @@ class PiGenerator:
             "--env",
             "PI_CODING_AGENT_DIR=/home/benchmark/.pi/agent",
             "--mount",
-            f"type=bind,source={install_dir.resolve()},target=/pi-install",
+            f"type=bind,source={install_dir.resolve()},target=/pi-install,readonly",
             "--mount",
             f"type=bind,source={workspace.resolve()},target=/workspace",
             "--mount",
@@ -1346,7 +1370,7 @@ class PiGenerator:
             return
         home_dir = prepared.task_dir / "pi-home"
         if home_dir.exists():
-            shutil.rmtree(home_dir, ignore_errors=True)
+            _safe_rmtree(home_dir, safe_parent=prepared.task_dir, ignore_errors=True)
 
     def _remove_container(self, container_name: str) -> None:
         subprocess.run(

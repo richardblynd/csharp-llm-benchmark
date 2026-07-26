@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmark.config import DockerConfig
+from benchmark.fsafety import safe_rmtree as _safe_rmtree
 from benchmark.llm_client import ExtractedCode, LlmUsage
 from benchmark.tasks import Task
 
@@ -354,7 +355,7 @@ class DockerRunner:
 
     def _snapshot_workspace(self, workdir: Path, destination: Path) -> None:
         if destination.exists():
-            shutil.rmtree(destination)
+            _safe_rmtree(destination, safe_parent=destination.parent)
         ignore = shutil.ignore_patterns("bin", "obj", "TestResults", ".tmp")
         shutil.copytree(workdir, destination, ignore=ignore)
 
@@ -474,7 +475,7 @@ class DockerRunner:
     ) -> CommandResult:
         destination = workdir / "TestResults"
         if destination.exists():
-            shutil.rmtree(destination)
+            _safe_rmtree(destination, safe_parent=workdir)
         completed = subprocess.run(
             [
                 "docker",
