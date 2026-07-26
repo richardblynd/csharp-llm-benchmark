@@ -516,7 +516,7 @@ class OpenCodeGenerator:
                 "--user",
                 "root",
                 "--mount",
-                f"type=bind,source={install_dir.resolve()},target=/opencode-install,readonly",
+                f"type=bind,source={install_dir.resolve()},target=/opencode-install",
                 self._opencode.docker_image,
                 "/bin/sh",
                 "-lc",
@@ -793,67 +793,134 @@ class OpenCodeGenerator:
         return translate_base_url_for_container(self._llm.base_url)
 
 
-def _ensure_is_directory(path: Path, *, retries: int = 3) -> None:
+_mkdir_lock = threading.Lock()
+
+
+def _ensure_is_directory(path: Path, *, retries: int = 5) -> None:
     """Ensure *path* is a directory.
 
     On Windows + Docker Desktop (especially via WSL), a ``docker run --mount
     type=bind`` whose source does **not** exist yet can silently create it as
-    an **empty file** on the host.  Subsequent calls to ``mkdir(exist_ok=True)``
-    then raise ``FileExistsError: [Errno 17] File exists``.
+    an **empty file**, symlink, or reparse point on the host.  Subsequent calls
+    to ``mkdir(exist_ok=True)`` then raise ``FileExistsError: [Errno 17] File exists``.
 
-    This helper removes stale empty-file placeholders and retries to handle
-    race conditions between parallel Docker containers.
+    This helper creates each component of the path individually (bottom-up),
+    removing any placeholder created by Docker at each level before mkdir'ing.
+    A global lock ensures only one thread does this work for a given path tree.
 
-    Safety constraint: files are only removed if they live inside the resolved
-    cache root (the first component of *path*). This prevents accidental deletion
-    of legitimate project files when a path segment is mistakenly created as a
-    file by Docker bind mounts on Windows/WSL.
+    Safety constraint: entries are only removed if they live inside the resolved
+    cache root. This prevents accidental deletion of legitimate project files.
     """
     abs_path = path.resolve()
-    # Determine the safe root — only unlink descendants of this ancestor.
     cache_root = cache_safety_root(abs_path)
-    for attempt in range(1, retries + 1):
-        # Check parent chain — Docker can create intermediate segments as files too
-        for ancestor in path.parents:
-            if not ancestor.exists():
-                break
-            if ancestor.is_file() and cache_root is not None:
-                try:
-                    ancestor.resolve().relative_to(cache_root)
-                except ValueError:
-                    raise RuntimeError(
-                        f"Refusing to unlink file placeholder outside cache root: "
-                        f"{ancestor.resolve()} (root: {cache_root})"
-                    )
-                ancestor.unlink()
-                print(
-                    f"  [docker-fix] removed stale file placeholder: {ancestor.resolve()}",
-                    file=sys.stderr,
-                )
-        # Handle the target itself
-        if path.is_file():
-            if cache_root is not None:
-                try:
-                    abs_path.relative_to(cache_root)
-                except ValueError:
-                    raise RuntimeError(
-                        f"Refusing to unlink install dir outside cache root: "
-                        f"{abs_path} (root: {cache_root})"
-                    )
-            print(
-                f"  [docker-fix] removing stale install dir (file): {abs_path} "
-                f"(attempt {attempt}/{retries})",
-                file=sys.stderr,
-            )
-            path.unlink()
+
+    def _safe_force_remove(target: Path) -> bool:
+        """Remove *target* if it blocks mkdir.
+        Returns True if something was removed. Never removes a path that is
+        already a valid directory visible to stat(), and never removes the
+        cache_root itself.
+        """
+        resolved = target.resolve()
+        print(f"  [debug-fs] checking {target} (resolved: {resolved})", file=sys.stderr)
+        if cache_root is not None:
+            try:
+                resolved.relative_to(cache_root)
+            except ValueError:
+                print(f"  [debug-fs] {resolved} is outside cache root {cache_root}, skipping remove", file=sys.stderr)
+                return False
+        if target.is_dir():
+            print(f"  [debug-fs] {target} is already a directory, keeping it", file=sys.stderr)
+            return False
         try:
-            path.mkdir(parents=True, exist_ok=True)
-            return
-        except FileExistsError as exc:
-            if path.is_file():
-                path.unlink()
-                continue  # retry mkdir after unlinking
-            raise
+            print(f"  [debug-fs] attempting to unlink {target}", file=sys.stderr)
+            target.unlink()
+            print(f"  [docker-fix] removed placeholder file: {resolved}", file=sys.stderr)
+            return True
+        except IsADirectoryError:
+            print(f"  [debug-fs] unlink failed: {target} is actually a directory, trying rmdir/rmtree", file=sys.stderr)
+            # Fall through to rmdir and rmtree
+        except FileNotFoundError:
+            print(f"  [debug-fs] unlink failed: {target} not found", file=sys.stderr)
+            pass
+        except FileNotFoundError:
+            print(f"  [debug-fs] unlink failed: {target} not found", file=sys.stderr)
+            pass
+        try:
+            print(f"  [debug-fs] attempting to rmdir {target}", file=sys.stderr)
+            target.rmdir()
+            print(f"  [docker-fix] removed stale empty dir: {resolved}", file=sys.stderr)
+            return True
+        except (FileNotFoundError, OSError) as e:
+            print(f"  [debug-fs] rmdir failed: {e}", file=sys.stderr)
+            pass
+        try:
+            print(f"  [debug-fs] attempting shutil.rmtree {target}", file=sys.stderr)
+            import shutil as _shutil
+            _shutil.rmtree(str(target))
+            print(f"  [docker-fix] removed dir tree: {resolved}", file=sys.stderr)
+            return True
+        except (FileNotFoundError, OSError) as e:
+            print(f"  [debug-fs] rmtree failed: {e}", file=sys.stderr)
+            pass
+        return False
+
+    with _mkdir_lock:
+        for attempt in range(1, retries + 1):
+            if abs_path.is_dir():
+                return
+            # Build the list of ancestors that need to exist, from root to leaf.
+            needed: list[Path] = []
+            current = abs_path
+            while not current.exists() or (not current.is_dir()):
+                needed.insert(0, current)
+                parent = current.parent
+                if current == parent:
+                    break  # reached filesystem root
+                current = parent
+            
+            for component in needed:
+                try:
+                    component.mkdir(exist_ok=True)
+                except FileExistsError:
+                    # mkdir says it exists but stat didn't — WSL2 9p quirk.
+                    # Force remove and retry this single component.
+                    if _safe_force_remove(component):
+                        time.sleep(0.1)
+                        try:
+                            component.mkdir(exist_ok=True)
+                        except FileExistsError as inner_exc:
+                            print(
+                                f"  [docker-fix] still blocked after removal: "
+                                f"{component}. Will retry outer loop.",
+                                file=sys.stderr,
+                            )
+                    else:
+                        raise
+                except OSError as ose:
+                    # On WSL2, mkdir can fail with IsADirectoryError for dirs
+                    # that exist but aren't visible to stat(). Skip them.
+                    if 'Is a directory' in str(ose) or isinstance(ose, IsADirectoryError):
+                        continue
+                    _safe_force_remove(component)
+                    time.sleep(0.1)
+            
+            if abs_path.is_dir():
+                return
+            # If we get here, mkdir succeeded but somehow it's still not a dir.
+            # Clean up and retry the whole thing.
+            _safe_force_remove(abs_path)
+            for component in needed:
+                try:
+                    _safe_force_remove(component)
+                except Exception:
+                    pass
+            time.sleep(0.1)
+            continue
+        
+        raise RuntimeError(
+            f"Failed to create directory after {retries} attempts: {abs_path}. "
+            "Docker may have created a placeholder file that cannot be removed."
+        )
 
 
 def _run_docker_command(
