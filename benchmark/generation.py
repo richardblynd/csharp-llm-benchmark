@@ -515,8 +515,8 @@ class OpenCodeGenerator:
                 self._opencode.network,
                 "--user",
                 "root",
-                "--mount",
-                f"type=bind,source={install_dir.resolve()},target=/opencode-install",
+                "-v",
+                f"{install_dir.resolve()}:/opencode-install",
                 self._opencode.docker_image,
                 "/bin/sh",
                 "-lc",
@@ -1144,13 +1144,7 @@ class PiGenerator:
         Returns (install_time_seconds, combined_output).
         """
         install_dir = self._pi_install_dir()
-        print(
-            f"  [pi-install] ensuring dir: {install_dir.resolve()} "
-            f"(exists={install_dir.exists()}, "
-            f"is_file={install_dir.is_file()}, "
-            f"is_dir={install_dir.is_dir()})",
-            file=sys.stderr,
-        )
+        
         _ensure_is_directory(install_dir)
         package_spec = f"{self._pi.package}@{self._pi.version}"
 
@@ -1183,8 +1177,8 @@ class PiGenerator:
                 "bridge",
                 "--user",
                 "root",
-                "--mount",
-                f"type=bind,source={install_dir.resolve()},target=/pi-install",
+                "-v",
+                f"{install_dir.resolve()}:/pi-install",
                 self._pi.docker_image,
                 "/bin/sh",
                 "-lc",
@@ -1220,11 +1214,6 @@ class PiGenerator:
             raise RuntimeError(f"pi installed but binary missing at {pi_binary}")
 
         elapsed = time.perf_counter() - start
-        print(
-            f"  [pi-install] OK in {elapsed:.1f}s: "
-            f"{package_spec} -> {install_dir.resolve()}",
-            file=sys.stderr,
-        )
         return elapsed, install_result.combined_output
 
     def _prepare_workspace(
