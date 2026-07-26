@@ -1272,7 +1272,7 @@ class PiGenerator:
         payload = {
             "providers": {
                 "benchmark": {
-                    "baseUrl": f"{container_base_url}/v1",
+                    "baseUrl": container_base_url,
                     "api": "openai-completions",
                     "apiKey": "$OPENCODE_BENCHMARK_API_KEY",
                     "compat": {
