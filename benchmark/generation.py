@@ -1597,6 +1597,7 @@ def _collect_usage(value: Any, totals: dict[str, int | None]) -> None:
             ("output_tokens", "completion_tokens"),
             ("output", "completion_tokens"),
             ("total_tokens", "total_tokens"),
+            ("totalTokens", "total_tokens"),
             ("total", "total_tokens"),
             ("reasoning_tokens", "reasoning_tokens"),
             ("reasoning", "reasoning_tokens"),
