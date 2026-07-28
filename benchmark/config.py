@@ -635,8 +635,8 @@ def _positive_float(value: Any, name: str) -> float:
 
 def _generator_value(value: Any, name: str) -> str:
     text = str(value).strip().lower()
-    if text not in {"llm", "opencode", "pi"}:
-        raise ValueError(f"{name} must be 'llm', 'opencode', or 'pi'")
+    if text not in {"llm", "opencode", "pi", "all"}:
+        raise ValueError(f"{name} must be 'llm', 'opencode', 'pi', or 'all'")
     return text
 
 

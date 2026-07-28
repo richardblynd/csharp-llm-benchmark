@@ -355,7 +355,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--generator",
-        choices=("llm", "opencode", "pi"),
+        choices=("llm", "opencode", "pi", "all"),
         help="Solution generator to use. Defaults to benchmark.generator.",
     )
     run.add_argument(
@@ -440,6 +440,164 @@ def _validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _execute_benchmark(
+    config: AppConfig,
+    tasks: list[Task],
+    args: argparse.Namespace,
+) -> BenchmarkScore:
+    resume_from_index = 0
+    if args.resume is not None:
+        resume_from_index = _find_task_index(tasks, args.resume)
+        run_dir = _resolve_resume_run_dir(
+            config.benchmark.output_dir,
+            args.resume_dir,
+        )
+    else:
+        run_dir = create_run_dir(
+            config.benchmark.output_dir,
+            model_label=config.llm.effective_model_label,
+            quantization=config.llm.quantization,
+            kv_cache_quantization=config.llm.kv_cache_quantization,
+            generator_mode=config.benchmark.generator.upper(),
+        )
+
+    discovery_runs: list[TemperatureRun] | None = None
+    reuse_scores: dict[str, TaskScore] | None = None  # task_id → TaskScore from discovery
+    is_discovery = (
+        config.llm.discovery.enabled
+        and args.resume is None
+        and len(config.llm.temperatures) > 1
+        and not _is_single_task_id_targeting_non_discovery(
+            tasks, config.benchmark.task_id
+        )
+    )
+
+    if is_discovery:
+        discovery_temps = get_effective_discovery_temperatures(config)
+        discovery_config = with_llm_temperature(
+            config,
+            discovery_temps[0],
+        )
+        # Override temperatures for discovery phase
+        discovery_config = with_llm_temperatures(config, discovery_temps)
+
+        try:
+            discovery_tasks = select_discovery_tasks(tasks)
+        except RuntimeError as exc:
+            print(f"Skipping discovery: {exc}", file=sys.stderr)
+            is_discovery = False
+        else:
+            n_disc = len(discovery_tasks)
+            n_templs = len(discovery_temps)
+            phase_label = (
+                f"Phase: Discovery — {n_disc} tasks, "
+                f"{n_templs} temperatures"
+            )
+
+            discovery_runs = _run_task_major_temperatures(
+                discovery_config,
+                discovery_tasks,
+                run_dir=run_dir / "discovery",
+                resume_from_index=0,
+                resume_task_id=None,
+                phase_label=phase_label,
+            )
+
+            best_discovery_run = _select_best_temperature_run(discovery_runs)
+            winning_temp = best_discovery_run.temperature
+
+            print()
+            print("Discovery results:")
+            for dr in discovery_runs:
+                marker = " ← winner" if dr.temperature == winning_temp else ""
+                print(
+                    f"  {_format_temperature(dr.temperature)}: "
+                    f"{dr.score.final_score} "
+                    f"({dr.score.earned_points:g}/{dr.score.available_points:g}){marker}"
+                )
+            print(f"Selected temperature: {_format_temperature(winning_temp)}")
+
+    # Phase 2 — Full benchmark with winning (or default) temperature
+    if is_discovery and discovery_runs:
+        winning_temp = _select_best_temperature_run(discovery_runs).temperature
+        full_config = with_llm_temperature(config, winning_temp)
+        full_config = with_llm_temperatures(config, (winning_temp,))
+
+        # Reuse discovery scores so we don't re-generate / re-evaluate those tasks
+        reuse_scores = _build_discovery_reuse_map(
+            discovery_runs,
+            winning_temp,
+            run_dir / "discovery",
+        )
+        skipped_count = len(reuse_scores)
+        phase_label = (
+            f"Phase: Full Benchmark — temperature "
+            f"{_format_temperature(winning_temp)}, {len(tasks)} tasks"
+            f" ({skipped_count} from discovery)"
+        )
+    else:
+        full_config = config
+        phase_label = None
+
+    temperature_runs = _run_task_major_temperatures(
+        full_config,
+        tasks,
+        run_dir=run_dir,
+        resume_from_index=resume_from_index,
+        resume_task_id=args.resume,
+        phase_label=phase_label,
+        reuse_scores=reuse_scores,
+    )
+
+    best_run = _select_best_temperature_run(temperature_runs)
+    best_config = with_llm_temperature(full_config, best_run.temperature)
+    write_summary(
+        run_dir,
+        config=best_config,
+        score=best_run.score,
+        task_scores=best_run.task_scores,
+        temperature_scores=temperature_runs,
+        discovery_runs=discovery_runs,
+    )
+
+    if is_discovery and discovery_runs:
+        print()
+        winning_temp = _select_best_temperature_run(discovery_runs).temperature
+        print(f"Discovery selected: {_format_temperature(winning_temp)}")
+    print(f"Best temperature: {_format_temperature(best_run.temperature)}")
+    print(
+        f"Final score: {best_run.score.final_score} "
+        f"({best_run.score.earned_points:g}/{best_run.score.available_points:g})"
+    )
+    total_llm_time = sum(
+        task_score.llm_response_time_seconds for task_score in best_run.task_scores
+    )
+    print(f"Total LLM response time: {format_duration_hms(total_llm_time)}")
+    total_llm_tokens = _sum_known_tokens(
+        task_score.llm_usage.total_tokens for task_score in best_run.task_scores
+    )
+    print(f"Total LLM tokens: {_format_tokens(total_llm_tokens)}")
+    highest_token_task = find_highest_token_task(best_run.task_scores)
+    if highest_token_task is None:
+        print("Highest-token task: unavailable (token usage unavailable for all tasks)")
+    else:
+        print(
+            "Highest-token task: "
+            f"{highest_token_task.task_id} "
+            f"({_format_tokens(highest_token_task.llm_usage.total_tokens)}, "
+            f"LLM time: {highest_token_task.llm_response_time_seconds:.2f}s)"
+        )
+    if len(temperature_runs) > 1:
+        print("Temperature scores:")
+        for temperature_run in temperature_runs:
+            print(
+                "  "
+                f"{_format_temperature(temperature_run.temperature)}: "
+                f"{temperature_run.score.final_score} "
+                f"({temperature_run.score.earned_points:g}/{temperature_run.score.available_points:g})"
+            )
+    return best_run.score
+
 def _run(args: argparse.Namespace) -> int:
     discovery_enabled_override = (
         args.discovery_enabled == "true"
@@ -479,6 +637,37 @@ def _run(args: argparse.Namespace) -> int:
     errors = validate_tasks(tasks)
     if errors:
         raise RuntimeError("Task validation failed:\n" + "\n".join(errors))
+
+    if config.benchmark.generator == "all":
+        results = {}
+        for mode in ["llm", "opencode", "pi"]:
+            print(f"\n{'='*40}\nRunning benchmark in mode: {mode}\n{'='*40}")
+            try:
+                from dataclasses import replace as dc_replace
+                # We need to update the generator in BenchmarkConfig which is inside AppConfig
+                # Since both are frozen dataclasses, we must use replace recursively
+                mode_benchmark_config = dc_replace(config.benchmark, generator=mode)
+                mode_config = dc_replace(config, benchmark=mode_benchmark_config)
+                score = _execute_benchmark(mode_config, tasks, args)
+                results[mode] = score
+            except Exception as exc:
+                print(f"Error during {mode} run: {exc}", file=sys.stderr)
+                results[mode] = None
+
+        print("\n" + "="*40)
+        print("CONSOLIDATED SUMMARY")
+        print("="*40)
+        for mode in ["llm", "opencode", "pi"]:
+            score = results.get(mode)
+            if score:
+                print(f"{mode:10}: {score.final_score} ({score.earned_points:g}/{score.available_points:g})")
+            else:
+                print(f"{mode:10}: FAILED")
+        print("="*40)
+        return 0
+
+    _execute_benchmark(config, tasks, args)
+    return 0
 
     resume_from_index = 0
     if args.resume is not None:
