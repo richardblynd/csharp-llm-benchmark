@@ -41,6 +41,7 @@ class BenchmarkResult:
     selected_temperature: float | None
     temperature_scores: dict[str, float | None]
     uses_discovery: bool
+    context_limit: int
     final_score: float | None
     earned_points: float | None
     available_points: float | None
@@ -165,6 +166,14 @@ def parse_summary(
         if generator.lower() == "pi"
         else ""
     )
+    context_limit_raw = None
+    opencode_payload = payload.get("opencode")
+    pi_payload = payload.get("pi")
+    if isinstance(opencode_payload, dict):
+        context_limit_raw = opencode_payload.get("context_limit")
+    elif isinstance(pi_payload, dict):
+        context_limit_raw = pi_payload.get("context_limit")
+    context_limit = int(context_limit_raw) if context_limit_raw is not None else 50000
     company = str(payload.get("company") or llm_payload.get("company") or "")
     quantization = str(
         payload.get("quantization")
@@ -251,6 +260,7 @@ def parse_summary(
         selected_temperature=selected_temperature,
         temperature_scores=temperature_scores,
         uses_discovery=discovery_info.get("enabled", False),
+        context_limit=context_limit,
         final_score=final_score,
         earned_points=earned_points,
         available_points=available_points,
@@ -1221,11 +1231,15 @@ def render_html(
          <input id="show-temperature-columns" type="checkbox">
          Show temperature scores
        </label>
-       <label class="check-option">
-         <input id="show-version-column" type="checkbox">
-         Show version column
-       </label>
-     </section>
+        <label class="check-option">
+          <input id="show-version-column" type="checkbox">
+          Show version column
+        </label>
+        <label class="check-option">
+          <input id="show-context-limit-column" type="checkbox">
+          Show context limit column
+        </label>
+      </section>
 
     <div class="summary">
       <span id="visible-count">Showing {len(benchmark_results)} of {len(benchmark_results)} runs</span>
@@ -1239,6 +1253,7 @@ def render_html(
             <th class="numeric" rowspan="2" data-key="rank" data-type="number">Rank</th>
             <th rowspan="2" data-key="generator" data-type="text">Generator</th>
             <th rowspan="2" data-key="version" data-type="text" data-column-group="version" hidden>Version</th>
+            <th class="numeric" rowspan="2" data-key="contextLimit" data-type="number" data-column-group="contextlimit" hidden>Context</th>
             <th rowspan="2" data-key="model" data-type="text">Model</th>
             <th rowspan="2" data-key="company" data-type="text">Company</th>
             <th rowspan="2" data-key="quantization" data-type="text" title="Quantization" aria-label="Quantization">Quant.</th>
@@ -1313,6 +1328,7 @@ def render_html(
       score: document.querySelector("#show-score-columns"),
       temperature: document.querySelector("#show-temperature-columns"),
       version: document.querySelector("#show-version-column"),
+      contextlimit: document.querySelector("#show-context-limit-column"),
     }};
     const visibleCount = document.querySelector("#visible-count");
     const empty = document.querySelector("#empty");
@@ -1417,6 +1433,7 @@ def render_html(
           score: columnToggles.score.checked,
           temperature: columnToggles.temperature.checked,
           version: columnToggles.version.checked,
+          contextlimit: columnToggles.contextlimit.checked,
         }},
         sort: sortState,
       }};
@@ -1449,6 +1466,8 @@ def render_html(
       columnToggles.token.checked = storedColumns.token === true;
       columnToggles.score.checked = storedColumns.score === true;
       columnToggles.temperature.checked = storedColumns.temperature === true;
+      columnToggles.version.checked = storedColumns.version === true;
+      columnToggles.contextlimit.checked = storedColumns.contextlimit === true;
 
       const storedSort = state.sort || {{}};
       const sortHeader = sortHeaderForKey(storedSort.key);
@@ -1835,7 +1854,8 @@ def render_html(
       const showScoreColumns = columnToggles.score.checked;
       const showTemperatureColumns = columnToggles.temperature.checked;
       const showVersionColumn = columnToggles.version.checked;
-    
+      const showContextLimitColumn = columnToggles.contextlimit.checked;
+
       table.querySelectorAll('[data-column-group="token"]').forEach((cell) => {{
         cell.hidden = !showTokenColumns;
       }});
@@ -1848,7 +1868,10 @@ def render_html(
       table.querySelectorAll('[data-column-group="version"]').forEach((cell) => {{
         cell.hidden = !showVersionColumn;
       }});
-    
+      table.querySelectorAll('[data-column-group="contextlimit"]').forEach((cell) => {{
+        cell.hidden = !showContextLimitColumn;
+      }});
+
       secondaryHeaderRow.hidden = !showTokenColumns && !showScoreColumns && !showTemperatureColumns;
     
       tokenGroupHeading.textContent = showTokenColumns ? "Tokens" : "Total tokens";
@@ -1987,6 +2010,7 @@ def render_html_row(
         f'data-rank="{rank}" '
         f'data-generator="{escape_attr(result.generator)}" '
         f'data-version="{escape_attr(result.version or "")}" '
+        f'data-context-limit="{result.context_limit}" '
         f'data-model="{escape_attr(result.model)}" '
         f'data-company="{escape_attr(result.company)}" '
         f'data-quantization="{escape_attr(result.quantization)}" '
@@ -2007,6 +2031,7 @@ def render_html_row(
         f'<td class="numeric">{rank}</td>'
         f"<td>{escape_html(result.generator)}</td>"
         f'<td data-column-group="version" hidden>{escape_html(result.version or "n/a")}</td>'
+        f'<td class="numeric" data-column-group="contextlimit" hidden>{escape_html(format_int(result.context_limit))}</td>'
         f'<td class="model"><button class="model-button" type="button" data-model-filter="{escape_attr(result.model)}">{escape_html(result.model)}</button></td>'
         f'<td>{escape_html(result.company or "n/a")}</td>'
         f"<td>{quantization_cell}</td>"
