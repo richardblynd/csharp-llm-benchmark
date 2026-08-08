@@ -3,7 +3,7 @@ llm:
   api_key: "lm-studio"
   model: "local-model-name"
   modelLabel: "local-model-label"
-  company: "local-company"
+  publisher: "local-publisher"
   quantization: "not-specified"
   # Quantização do KV cache. Omitir ou usar null se não se aplica (ex: GPT cloud).
   # kv_cache_quantization: "Q4"

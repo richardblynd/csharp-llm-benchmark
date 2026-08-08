@@ -625,7 +625,7 @@ def write_result_json(
     *,
     model: str | None = None,
     model_label: str | None = None,
-    company: str | None = None,
+    publisher: str | None = None,
 ) -> None:
     payload = {
         "task_id": result.task_id,
@@ -649,8 +649,8 @@ def write_result_json(
         payload["model"] = model
     if model_label is not None:
         payload["modelLabel"] = model_label
-    if company is not None:
-        payload["company"] = company
+    if publisher is not None:
+        payload["publisher"] = publisher
 
     path.write_text(
         json.dumps(

@@ -320,7 +320,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--api-key")
     run.add_argument("--model")
     run.add_argument("--model-label")
-    run.add_argument("--company")
+    run.add_argument("--publisher")
     run.add_argument(
         "--top-p",
         type=float,
@@ -610,7 +610,7 @@ def _run(args: argparse.Namespace) -> int:
         api_key=args.api_key,
         model=args.model,
         model_label=args.model_label,
-        company=args.company,
+        publisher=args.publisher,
         difficulty=args.difficulty,
         output_dir=args.output_dir,
         task_id=args.task_id,
@@ -1555,7 +1555,7 @@ def _complete_evaluations(
             result,
             model=config.llm.model,
             model_label=config.llm.effective_model_label,
-            company=config.llm.company,
+            publisher=config.llm.publisher,
         )
         task_score = score_task(pending_evaluation.task, result)
         task_scores_by_temperature[pending_evaluation.temperature_index][

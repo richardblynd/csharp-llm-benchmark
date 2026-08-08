@@ -29,7 +29,7 @@ class BenchmarkResult:
     generator: str
     version: str | None
     model: str
-    company: str
+    publisher: str
     quantization: str
     kv_cache_quantization: str | None
     total_seconds: float | None
@@ -53,7 +53,7 @@ _GENERATOR_KEY = {"opencode": "OpenCode", "pi": "Pi"}
 @dataclass(frozen=True)
 class GroupedResult:
     model: str
-    company: str
+    publisher: str
     quantization: str
     kv_cache_quantization: str | None
     context_limit: int
@@ -76,12 +76,12 @@ def group_results(results: list[BenchmarkResult]) -> list[GroupedResult]:
     for r in results:
         gen_label = _GENERATOR_KEY.get(r.generator.lower(), "LLM")
         kv_cache_key = r.kv_cache_quantization or ""
-        key = (r.model, r.company, r.quantization, kv_cache_key, r.context_limit)
+        key = (r.model, r.publisher, r.quantization, kv_cache_key, r.context_limit)
         groups.setdefault(key, []).append((gen_label, r))
 
     grouped: list[GroupedResult] = []
     for key, items in groups.items():
-        model, company, quantization, kv_cache_key, context_limit = key
+        model, publisher, quantization, kv_cache_key, context_limit = key
 
         score_map: dict[str, float | None] = {}
         for gen_label, r in items:
@@ -90,7 +90,7 @@ def group_results(results: list[BenchmarkResult]) -> list[GroupedResult]:
 
         grouped.append(GroupedResult(
             model=model,
-            company=company,
+            publisher=publisher,
             quantization=quantization,
             kv_cache_quantization=None if not kv_cache_key else kv_cache_key,
             context_limit=context_limit,
@@ -231,7 +231,7 @@ def parse_summary(
     elif isinstance(pi_payload, dict):
         context_limit_raw = pi_payload.get("context_limit")
     context_limit = int(context_limit_raw) if context_limit_raw is not None else 50000
-    company = str(payload.get("company") or llm_payload.get("company") or "")
+    publisher = str(payload.get("publisher") or llm_payload.get("publisher") or "")
     quantization = str(
         payload.get("quantization")
         or llm_payload.get("quantization")
@@ -305,7 +305,7 @@ def parse_summary(
         generator=generator,
         version=version or None,
         model=model,
-        company=company,
+        publisher=publisher,
         quantization=quantization,
         kv_cache_quantization=kv_cache_quantization,
         total_seconds=total_seconds,
@@ -473,7 +473,7 @@ def render_markdown(
         f"- Results directory: `{results_dir}`",
         f"- Configuration groups: `{len(grouped_results)}`",
         "",
-        "| Rank | Model | Company | Quantization | KV Cache | Context Size | SCORE LLM | SCORE PI | SCORE OPENCODE | Avg Score | Max Score |",
+        "| Rank | Model | Publisher | Quantization | KV Cache | Context Size | SCORE LLM | SCORE PI | SCORE OPENCODE | Avg Score | Max Score |",
         "| ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
 
@@ -481,7 +481,7 @@ def render_markdown(
         lines.append(
             f"| {rank} "
             f"| {markdown_code(g.model)} "
-            f"| {markdown_code(g.company or 'n/a')} "
+            f"| {markdown_code(g.publisher or 'n/a')} "
             f"| {markdown_code(g.quantization or 'n/a')} "
             f"| {markdown_code(g.kv_cache_quantization or 'n/a')} "
             f"| `{g.context_limit}` "
@@ -499,7 +499,7 @@ def render_html_row_grouped(rank: int, g: GroupedResult) -> str:
     avg = g.avg_score()
     mx = g.max_score()
     search_text = " ".join([
-        str(rank), g.model, g.company or "", g.quantization or "",
+        str(rank), g.model, g.publisher or "", g.quantization or "",
         g.kv_cache_quantization or "", str(g.context_limit),
         _format_grouped_score(g.score_llm),
         _format_grouped_score(g.score_pi),
@@ -511,7 +511,7 @@ def render_html_row_grouped(rank: int, g: GroupedResult) -> str:
         f'      <tr '
         f'data-rank="{rank}" '
         f'data-model="{escape_attr(g.model)}" '
-        f'data-company="{escape_attr(g.company or "")}" '
+        f'data-publisher="{escape_attr(g.publisher or "")}" '
         f'data-quantization="{escape_attr(g.quantization or "")}" '
         f'data-kv-cache-quant="{escape_attr(g.kv_cache_quantization or "")}" '
         f'data-context-limit="{g.context_limit}" '
@@ -523,7 +523,7 @@ def render_html_row_grouped(rank: int, g: GroupedResult) -> str:
         f'data-search="{escape_attr(search_text)}">'
         f'<td class="numeric">{rank}</td>'
         f'<td class="model"><button class="model-button" type="button" data-model-filter="{escape_attr(g.model)}">{escape_html(g.model)}</button></td>'
-        f'<td>{escape_html(g.company or "n/a")}</td>'
+        f'<td>{escape_html(g.publisher or "n/a")}</td>'
         f'<td>{escape_html(g.quantization or "n/a")}</td>'
         f'<td>{escape_html(g.kv_cache_quantization or "n/a")}</td>'
         f'<td class="numeric">{g.context_limit}</td>'
@@ -541,7 +541,7 @@ def render_html(
     results_dir: Path,
 ) -> str:
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    companies = sorted({g.company for g in grouped_results if g.company})
+    publishers = sorted({g.publisher for g in grouped_results if g.publisher})
     quantizations = sorted({g.quantization for g in grouped_results if g.quantization})
     kv_cache_quantizations = sorted(
         {str(g.kv_cache_quantization) for g in grouped_results if g.kv_cache_quantization is not None}
@@ -978,13 +978,13 @@ def render_html(
         <div class="sidebar-filters">
           <label>
             Search
-            <input id="search" type="search" placeholder="Model, company, quantization...">
+            <input id="search" type="search" placeholder="Model, publisher, quantization...">
           </label>
           <label>
-            Company
-            <select id="company">
-              <option value="">All companies</option>
-              {render_options(companies)}
+            Publisher
+            <select id="publisher">
+              <option value="">All publishers</option>
+              {render_options(publishers)}
             </select>
           </label>
           <label>
@@ -1029,7 +1029,7 @@ def render_html(
               <tr>
                 <th class="numeric" data-key="rank" data-type="number">Rank</th>
                 <th data-key="model" data-type="text">Model</th>
-                <th data-key="company" data-type="text">Company</th>
+                <th data-key="publisher" data-type="text">Publisher</th>
                 <th data-key="quantization" data-type="text">Quantization</th>
                 <th data-key="kvCacheQuant" data-type="text">KV Cache</th>
                 <th class="numeric" data-key="contextLimit" data-type="number">Context Size</th>
@@ -1088,7 +1088,7 @@ def render_html(
     const rows = Array.from(tbody.querySelectorAll("tr"));
     const filters = {{
       search: document.querySelector("#search"),
-      company: document.querySelector("#company"),
+      publisher: document.querySelector("#publisher"),
       quantization: document.querySelector("#quantization"),
       kvCacheQuant: document.querySelector("#kvCacheQuant"),
     }};
@@ -1149,14 +1149,14 @@ def render_html(
 
     function rowMatches(row) {{
       const query = normalize(filters.search.value);
-      const company = filters.company.value;
+      const publisher = filters.publisher.value;
       const quantization = filters.quantization.value;
       const kvCacheQuant = filters.kvCacheQuant.value;
       const minScore = clampScore(scoreRange.minInput.value, 0);
       const maxScore = clampScore(scoreRange.maxInput.value, 100);
 
       if (query && !normalize(row.dataset.search).includes(query)) return false;
-      if (company && row.dataset.company !== company) return false;
+      if (publisher && row.dataset.publisher !== publisher) return false;
       if (quantization && row.dataset.quantization !== quantization) return false;
       if (kvCacheQuant && row.dataset.kvCacheQuant !== kvCacheQuant) return false;
       const avgScore = numberValue(row, "avgScore");
@@ -1286,7 +1286,7 @@ def render_html(
 
     resetBtn.addEventListener("click", () => {{
       filters.search.value = "";
-      filters.company.value = "";
+      filters.publisher.value = "";
       filters.quantization.value = "";
       filters.kvCacheQuant.value = "";
       setScoreRange(0, 100);

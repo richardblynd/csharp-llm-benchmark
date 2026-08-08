@@ -14,7 +14,7 @@ cp config.example.yaml config.yaml
 ```
 
 2. Edit `config.yaml` with your LM Studio endpoint, API model, display model
-   label, optional company label and quantization label.
+   label, optional publisher label and quantization label.
 
 3. Build the .NET evaluation image:
 
@@ -303,17 +303,17 @@ llm:
   requests_per_minute: 3
 ```
 
-Set the API model, display model label, optional company label and quantization
+Set the API model, display model label, optional publisher label and quantization
 label in `config.yaml`.
 `model` is sent to the API, while `modelLabel` is used in result folder names
-and aggregate ranking tables. `company` is shown as a separate aggregate table
+and aggregate ranking tables. `publisher` is shown as a separate aggregate table
 column. If `modelLabel` is omitted, the model name is used:
 
 ```yaml
 llm:
   model: "qwen3.5-4b@q4_k_m"
   modelLabel: "qwen3.5-4b"
-  company: "Alibaba"
+  publisher: "Alibaba"
   quantization: "Q4_K_M"
 ```
 
