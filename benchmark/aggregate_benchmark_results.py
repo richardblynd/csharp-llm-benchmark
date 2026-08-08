@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -180,7 +181,11 @@ def collect_benchmark_results(results_dir: Path) -> list[BenchmarkResult]:
         if not summary_path.exists():
             continue
 
-        payload = load_json(summary_path)
+        try:
+          payload = load_json(summary_path)
+        except Exception as e:
+            logging.error("Error in path %s. error: %s", summary_path, e, exc_info=True)
+            raise
         tasks = [task for task in payload.get("tasks", []) if isinstance(task, dict)]
         benchmark_results.append(parse_summary(run_dir.name, payload, tasks))
 
