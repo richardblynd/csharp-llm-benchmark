@@ -27,6 +27,7 @@ TAG_COLORS = (
 class BenchmarkResult:
     run_name: str
     generator: str
+    version: str | None
     model: str
     company: str
     quantization: str
@@ -62,7 +63,10 @@ def main() -> int:
     benchmark_results = collect_benchmark_results(results_dir)
     markdown = render_markdown(benchmark_results, results_dir)
     output_path.write_text(markdown, encoding="utf-8")
-    html_page = render_html(benchmark_results, results_dir)
+    html_page = render_html(
+        benchmark_results, 
+        results_dir, 
+    )
     html_output_path.write_text(html_page, encoding="utf-8")
 
     print(
@@ -154,6 +158,13 @@ def parse_summary(
         or run_name
     )
     generator = normalize_generator(payload.get("generator"))
+    version = (
+        str(payload.get("opencode", {}).get("version") or "")
+        if generator.lower() == "opencode"
+        else str(payload.get("pi", {}).get("version") or "")
+        if generator.lower() == "pi"
+        else ""
+    )
     company = str(payload.get("company") or llm_payload.get("company") or "")
     quantization = str(
         payload.get("quantization")
@@ -226,6 +237,7 @@ def parse_summary(
     return BenchmarkResult(
         run_name=run_name,
         generator=generator,
+        version=version or None,
         model=model,
         company=company,
         quantization=quantization,
@@ -399,8 +411,8 @@ def render_markdown(
         f"- Results directory: `{results_dir}`",
         f"- Benchmark runs: `{len(benchmark_results)}`",
         "",
-        f"| Rank | Generator | Model | Company | Quantization | KV cache | Total time | Total tokens | Max task tokens | Max token task | Tokens/s | Easy score | Medium score | Hard score | Final score{temperature_header_segment} |",
-        f"| ---: | --- | --- | --- | --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---:{temperature_alignment_segment} |"
+        f"| Rank | Generator | Version | Model | Company | Quantization | KV cache | Total time | Total tokens | Max task tokens | Max token task | Tokens/s | Easy score | Medium score | Hard score | Final score{temperature_header_segment} |",
+        f"| ---: | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---:{temperature_alignment_segment} |"
     ]
 
     for rank, result in enumerate(benchmark_results, start=1):
@@ -414,9 +426,10 @@ def render_markdown(
             else f" | {format_temperature(result.selected_temperature)}"
         )
         lines.append(
-            "| {rank} | {generator} | {model} | {company} | {quantization} | {kv_cache} | {total_time} | {total_tokens} | {highest_token_total} | {highest_token_task} | {tokens_per_second} | {easy_score} | {medium_score} | {hard_score} | {final_score}{temperature_values} |".format(
+            "| {rank} | {generator} | {version} | {model} | {company} | {quantization} | {kv_cache} | {total_time} | {total_tokens} | {highest_token_total} | {highest_token_task} | {tokens_per_second} | {easy_score} | {medium_score} | {hard_score} | {final_score}{temperature_values} |".format(
                 rank=rank,
                 generator=markdown_code(result.generator),
+                version=markdown_code(result.version or "n/a"),
                 model=markdown_code(result.model),
                 company=markdown_code(result.company or "n/a"),
                 quantization=markdown_code(result.quantization or "n/a"),
@@ -450,6 +463,12 @@ def render_html(
     temperature_header_cells = render_temperature_header_cells(temperature_columns)
     generators = sorted(
         {result.generator for result in benchmark_results if result.generator}
+    )
+    opencode_versions = sorted(
+        {result.version for result in benchmark_results if result.generator.lower() == "opencode" and result.version}
+    )
+    pi_versions = sorted(
+        {result.version for result in benchmark_results if result.generator.lower() == "pi" and result.version}
     )
     companies = sorted(
         {result.company for result in benchmark_results if result.company}
@@ -1132,20 +1151,34 @@ def render_html(
         Search
         <input id="search" type="search" placeholder="Generator, model, company, quantization, task...">
       </label>
-      <label>
-        Generator
-        <select id="generator">
-          <option value="">All generators</option>
-          {render_options(generators)}
-        </select>
-      </label>
-      <label>
-        Company
-        <select id="company">
-          <option value="">All companies</option>
-          {render_options(companies)}
-        </select>
-      </label>
+       <label>
+         Generator
+         <select id="generator">
+           <option value="">All generators</option>
+           {render_options(generators)}
+         </select>
+       </label>
+       <label>
+         OpenCode Version
+         <select id="opencodeVersion">
+           <option value="">All OpenCode versions</option>
+           {render_options(opencode_versions)}
+         </select>
+       </label>
+       <label>
+         Pi Version
+         <select id="piVersion">
+           <option value="">All Pi versions</option>
+           {render_options(pi_versions)}
+         </select>
+       </label>
+       <label>
+         Company
+         <select id="company">
+           <option value="">All companies</option>
+           {render_options(companies)}
+         </select>
+       </label>
       <label>
         Quantization
         <select id="quantization">
@@ -1184,11 +1217,15 @@ def render_html(
         <input id="show-score-columns" type="checkbox">
         Show Easy/Medium/Hard scores
       </label>
-      <label class="check-option" title="Displays the per-temperature scores from full benchmark runs, or the per-temperature scores from the discovery round when discovery mode was used.">
-        <input id="show-temperature-columns" type="checkbox">
-        Show temperature scores
-      </label>
-    </section>
+       <label class="check-option" title="Displays the per-temperature scores from full benchmark runs, or the per-temperature scores from the discovery round when discovery mode was used.">
+         <input id="show-temperature-columns" type="checkbox">
+         Show temperature scores
+       </label>
+       <label class="check-option">
+         <input id="show-version-column" type="checkbox">
+         Show version column
+       </label>
+     </section>
 
     <div class="summary">
       <span id="visible-count">Showing {len(benchmark_results)} of {len(benchmark_results)} runs</span>
@@ -1201,6 +1238,7 @@ def render_html(
           <tr>
             <th class="numeric" rowspan="2" data-key="rank" data-type="number">Rank</th>
             <th rowspan="2" data-key="generator" data-type="text">Generator</th>
+            <th rowspan="2" data-key="version" data-type="text" data-column-group="version" hidden>Version</th>
             <th rowspan="2" data-key="model" data-type="text">Model</th>
             <th rowspan="2" data-key="company" data-type="text">Company</th>
             <th rowspan="2" data-key="quantization" data-type="text" title="Quantization" aria-label="Quantization">Quant.</th>
@@ -1257,6 +1295,8 @@ def render_html(
     const filters = {{
       search: document.querySelector("#search"),
       generator: document.querySelector("#generator"),
+      opencodeVersion: document.querySelector("#opencodeVersion"),
+      piVersion: document.querySelector("#piVersion"),
       company: document.querySelector("#company"),
       quantization: document.querySelector("#quantization"),
       kvCacheQuant: document.querySelector("#kvCacheQuant"),
@@ -1272,6 +1312,7 @@ def render_html(
       token: document.querySelector("#show-token-columns"),
       score: document.querySelector("#show-score-columns"),
       temperature: document.querySelector("#show-temperature-columns"),
+      version: document.querySelector("#show-version-column"),
     }};
     const visibleCount = document.querySelector("#visible-count");
     const empty = document.querySelector("#empty");
@@ -1359,10 +1400,12 @@ def render_html(
         return;
       }}
       const state = {{
-        version: 1,
+        version: 2,
         filters: {{
-          search: filters.search.value,
+          search: filters.search.Svalue,
           generator: filters.generator.value,
+          opencodeVersion: filters.opencodeVersion.value,
+          piVersion: filters.piVersion.value,
           company: filters.company.value,
           quantization: filters.quantization.value,
           kvCacheQuant: filters.kvCacheQuant.value,
@@ -1373,6 +1416,7 @@ def render_html(
           token: columnToggles.token.checked,
           score: columnToggles.score.checked,
           temperature: columnToggles.temperature.checked,
+          version: columnToggles.version.checked,
         }},
         sort: sortState,
       }};
@@ -1473,6 +1517,8 @@ def render_html(
     function rowMatches(row) {{
       const query = normalize(filters.search.value);
       const generator = filters.generator.value;
+      const opencodeVersion = filters.opencodeVersion.value;
+      const piVersion = filters.piVersion.value;
       const company = filters.company.value;
       const quantization = filters.quantization.value;
       const kvCacheQuant = filters.kvCacheQuant.value;
@@ -1485,6 +1531,17 @@ def render_html(
       if (generator && row.dataset.generator !== generator) {{
         return false;
       }}
+
+      const rowVersion = row.dataset.version;
+      const rowGenerator = row.dataset.generator.toLowerCase();
+      const matchesOpenCodeVersion = (opencodeVersion && rowGenerator === "opencode" && rowVersion === opencodeVersion);
+      const matchesPiVersion = (piVersion && rowGenerator === "pi" && rowVersion === piVersion);
+      const versionFilterActive = (opencodeVersion || piVersion);
+
+      if (versionFilterActive && !matchesOpenCodeVersion && !matchesPiVersion) {{
+        return false;
+      }}
+
       if (company && row.dataset.company !== company) {{
         return false;
       }}
@@ -1777,7 +1834,8 @@ def render_html(
       const showTokenColumns = columnToggles.token.checked;
       const showScoreColumns = columnToggles.score.checked;
       const showTemperatureColumns = columnToggles.temperature.checked;
-
+      const showVersionColumn = columnToggles.version.checked;
+    
       table.querySelectorAll('[data-column-group="token"]').forEach((cell) => {{
         cell.hidden = !showTokenColumns;
       }});
@@ -1787,21 +1845,24 @@ def render_html(
       table.querySelectorAll('[data-column-group="temperature"]').forEach((cell) => {{
         cell.hidden = !showTemperatureColumns;
       }});
-
+      table.querySelectorAll('[data-column-group="version"]').forEach((cell) => {{
+        cell.hidden = !showVersionColumn;
+      }});
+    
       secondaryHeaderRow.hidden = !showTokenColumns && !showScoreColumns && !showTemperatureColumns;
-
+    
       tokenGroupHeading.textContent = showTokenColumns ? "Tokens" : "Total tokens";
       tokenGroupHeading.colSpan = showTokenColumns ? 3 : 1;
       tokenGroupHeading.rowSpan = showTokenColumns ? 1 : 2;
       tokenGroupHeading.dataset.expanded = showTokenColumns ? "true" : "false";
       totalTokenHeading.hidden = !showTokenColumns;
-
+    
       scoreGroupHeading.textContent = showScoreColumns ? "Score" : "Score final";
       scoreGroupHeading.colSpan = showScoreColumns ? 4 : 1;
       scoreGroupHeading.rowSpan = showScoreColumns ? 1 : 2;
       scoreGroupHeading.dataset.expanded = showScoreColumns ? "true" : "false";
       finalScoreHeading.hidden = !showScoreColumns;
-
+    
       const temperatureColumnCount = table.querySelectorAll('thead [data-column-group="temperature"]').length;
       temperatureGroupHeading.textContent = showTemperatureColumns ? "Temperature" : "Best temp";
       temperatureGroupHeading.colSpan = showTemperatureColumns ? temperatureColumnCount + 1 : 1;
@@ -1925,6 +1986,7 @@ def render_html_row(
         "          <tr "
         f'data-rank="{rank}" '
         f'data-generator="{escape_attr(result.generator)}" '
+        f'data-version="{escape_attr(result.version or "")}" '
         f'data-model="{escape_attr(result.model)}" '
         f'data-company="{escape_attr(result.company)}" '
         f'data-quantization="{escape_attr(result.quantization)}" '
@@ -1944,6 +2006,7 @@ def render_html_row(
         f'data-search="{escape_attr(search_text)}">'
         f'<td class="numeric">{rank}</td>'
         f"<td>{escape_html(result.generator)}</td>"
+        f'<td data-column-group="version" hidden>{escape_html(result.version or "n/a")}</td>'
         f'<td class="model"><button class="model-button" type="button" data-model-filter="{escape_attr(result.model)}">{escape_html(result.model)}</button></td>'
         f'<td>{escape_html(result.company or "n/a")}</td>'
         f"<td>{quantization_cell}</td>"
