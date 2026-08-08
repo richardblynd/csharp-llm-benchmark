@@ -47,6 +47,62 @@ class BenchmarkResult:
     available_points: float | None
 
 
+_GENERATOR_KEY = {"opencode": "OpenCode", "pi": "Pi"}
+
+
+@dataclass(frozen=True)
+class GroupedResult:
+    model: str
+    company: str
+    quantization: str
+    kv_cache_quantization: str | None
+    context_limit: int
+    score_llm: float | None
+    score_pi: float | None
+    score_opencode: float | None
+
+    def avg_score(self) -> float | None:
+        scores = [s for s in (self.score_llm, self.score_pi, self.score_opencode) if s is not None]
+        return sum(scores) / len(scores) if scores else None
+
+    def max_score(self) -> float | None:
+        scores = [s for s in (self.score_llm, self.score_pi, self.score_opencode) if s is not None]
+        return max(scores) if scores else None
+
+
+def group_results(results: list[BenchmarkResult]) -> list[GroupedResult]:
+    groups: dict[tuple[str, ...], list[BenchmarkResult]] = {}
+
+    for r in results:
+        gen_label = _GENERATOR_KEY.get(r.generator.lower(), "LLM")
+        kv_cache_key = r.kv_cache_quantization or ""
+        key = (r.model, r.company, r.quantization, kv_cache_key, r.context_limit)
+        groups.setdefault(key, []).append((gen_label, r))
+
+    grouped: list[GroupedResult] = []
+    for key, items in groups.items():
+        model, company, quantization, kv_cache_key, context_limit = key
+
+        score_map: dict[str, float | None] = {}
+        for gen_label, r in items:
+            if r.final_score is not None and gen_label not in score_map:
+                score_map[gen_label] = r.final_score
+
+        grouped.append(GroupedResult(
+            model=model,
+            company=company,
+            quantization=quantization,
+            kv_cache_quantization=None if not kv_cache_key else kv_cache_key,
+            context_limit=context_limit,
+            score_llm=score_map.get("LLM"),
+            score_pi=score_map.get("Pi"),
+            score_opencode=score_map.get("OpenCode"),
+        ))
+
+    grouped.sort(key=lambda g: (g.avg_score() is not None, g.avg_score() if g.avg_score() is not None else -1.0), reverse=True)
+    return grouped
+
+
 def main() -> int:
     args = parse_args()
     results_dir = args.results_dir.resolve()
@@ -62,16 +118,17 @@ def main() -> int:
     )
 
     benchmark_results = collect_benchmark_results(results_dir)
-    markdown = render_markdown(benchmark_results, results_dir)
+    grouped = group_results(benchmark_results)
+    markdown = render_markdown(grouped, results_dir)
     output_path.write_text(markdown, encoding="utf-8")
     html_page = render_html(
-        benchmark_results, 
-        results_dir, 
+        grouped,
+        results_dir,
     )
     html_output_path.write_text(html_page, encoding="utf-8")
 
     print(
-        f"Wrote {len(benchmark_results)} benchmark results to "
+        f"Wrote {len(grouped)} grouped benchmark results to "
         f"{output_path} and {html_output_path}"
     )
     return 0
@@ -398,107 +455,101 @@ def format_temperature_label(temperature: float) -> str:
     return f"{temperature:g}"
 
 
+def _format_grouped_score(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.1f}"
+
+
 def render_markdown(
-    benchmark_results: list[BenchmarkResult],
+    grouped_results: list[GroupedResult],
     results_dir: Path,
 ) -> str:
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    temperature_labels = collect_temperature_labels(benchmark_results)
-    temperature_headers = " | ".join(
-        f"Temp {label}" for label in temperature_labels
-    )
-    temperature_alignments = " | ".join("---:" for _label in temperature_labels)
-    temperature_header_segment = (
-        f" | Best temp | {temperature_headers}" if temperature_headers else " | Best temp"
-    )
-    temperature_alignment_segment = (
-        f" | ---: | {temperature_alignments}" if temperature_alignments else " | ---:"
-    )
     lines = [
         "# LLM Benchmark Results",
         "",
         f"- Generated at: `{generated_at}`",
         f"- Results directory: `{results_dir}`",
-        f"- Benchmark runs: `{len(benchmark_results)}`",
+        f"- Configuration groups: `{len(grouped_results)}`",
         "",
-        f"| Rank | Generator | Version | Model | Company | Quantization | KV cache | Total time | Total tokens | Max task tokens | Max token task | Tokens/s | Easy score | Medium score | Hard score | Final score{temperature_header_segment} |",
-        f"| ---: | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---:{temperature_alignment_segment} |"
+        "| Rank | Model | Company | Quantization | KV Cache | Context Size | SCORE LLM | SCORE PI | SCORE OPENCODE | Avg Score | Max Score |",
+        "| ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
 
-    for rank, result in enumerate(benchmark_results, start=1):
-        temperature_values = " | ".join(
-            format_score(result.temperature_scores.get(label))
-            for label in temperature_labels
-        )
-        temperature_value_segment = (
-            f" | {format_temperature(result.selected_temperature)} | {temperature_values}"
-            if temperature_values
-            else f" | {format_temperature(result.selected_temperature)}"
-        )
+    for rank, g in enumerate(grouped_results, start=1):
         lines.append(
-            "| {rank} | {generator} | {version} | {model} | {company} | {quantization} | {kv_cache} | {total_time} | {total_tokens} | {highest_token_total} | {highest_token_task} | {tokens_per_second} | {easy_score} | {medium_score} | {hard_score} | {final_score}{temperature_values} |".format(
-                rank=rank,
-                generator=markdown_code(result.generator),
-                version=markdown_code(result.version or "n/a"),
-                model=markdown_code(result.model),
-                company=markdown_code(result.company or "n/a"),
-                quantization=markdown_code(result.quantization or "n/a"),
-                kv_cache=markdown_code(result.kv_cache_quantization or "n/a"),
-                total_time=markdown_code(format_duration(result.total_seconds)),
-                total_tokens=format_int(result.total_tokens),
-                highest_token_total=format_int(result.highest_token_task_total_tokens),
-                highest_token_task=markdown_code(result.highest_token_task_id or "n/a"),
-                tokens_per_second=format_number(result.tokens_per_second),
-                easy_score=format_score(result.difficulty_scores["easy"]),
-                medium_score=format_score(result.difficulty_scores["medium"]),
-                hard_score=format_score(result.difficulty_scores["hard"]),
-                final_score=format_score(result.final_score),
-                temperature_values=temperature_value_segment,
-            )
+            f"| {rank} "
+            f"| {markdown_code(g.model)} "
+            f"| {markdown_code(g.company or 'n/a')} "
+            f"| {markdown_code(g.quantization or 'n/a')} "
+            f"| {markdown_code(g.kv_cache_quantization or 'n/a')} "
+            f"| `{g.context_limit}` "
+            f"| {_format_grouped_score(g.score_llm)} "
+            f"| {_format_grouped_score(g.score_pi)} "
+            f"| {_format_grouped_score(g.score_opencode)} "
+            f"| {_format_grouped_score(g.avg_score())} "
+            f"| {_format_grouped_score(g.max_score())} |"
         )
 
     lines.append("")
     return "\n".join(lines)
 
+def render_html_row_grouped(rank: int, g: GroupedResult) -> str:
+    avg = g.avg_score()
+    mx = g.max_score()
+    search_text = " ".join([
+        str(rank), g.model, g.company or "", g.quantization or "",
+        g.kv_cache_quantization or "", str(g.context_limit),
+        _format_grouped_score(g.score_llm),
+        _format_grouped_score(g.score_pi),
+        _format_grouped_score(g.score_opencode),
+        _format_grouped_score(avg),
+        _format_grouped_score(mx),
+    ])
+    return (
+        f'      <tr '
+        f'data-rank="{rank}" '
+        f'data-model="{escape_attr(g.model)}" '
+        f'data-company="{escape_attr(g.company or "")}" '
+        f'data-quantization="{escape_attr(g.quantization or "")}" '
+        f'data-kv-cache-quant="{escape_attr(g.kv_cache_quantization or "")}" '
+        f'data-context-limit="{g.context_limit}" '
+        f'data-score-llm="{number_attr(g.score_llm)}" '
+        f'data-score-pi="{number_attr(g.score_pi)}" '
+        f'data-score-opencode="{number_attr(g.score_opencode)}" '
+        f'data-avg-score="{number_attr(avg)}" '
+        f'data-max-score="{number_attr(mx)}" '
+        f'data-search="{escape_attr(search_text)}">'
+        f'<td class="numeric">{rank}</td>'
+        f'<td class="model"><button class="model-button" type="button" data-model-filter="{escape_attr(g.model)}">{escape_html(g.model)}</button></td>'
+        f'<td>{escape_html(g.company or "n/a")}</td>'
+        f'<td>{escape_html(g.quantization or "n/a")}</td>'
+        f'<td>{escape_html(g.kv_cache_quantization or "n/a")}</td>'
+        f'<td class="numeric">{g.context_limit}</td>'
+        f'<td class="numeric" data-extreme-key="scoreLlm">{_format_grouped_score(g.score_llm)}</td>'
+        f'<td class="numeric" data-extreme-key="scorePi">{_format_grouped_score(g.score_pi)}</td>'
+        f'<td class="numeric" data-extreme-key="scoreOpencode">{_format_grouped_score(g.score_opencode)}</td>'
+        f'<td class="numeric" data-extreme-key="avgScore">{_format_grouped_score(avg)}</td>'
+        f'<td class="numeric" data-extreme-key="maxScore">{_format_grouped_score(mx)}</td>'
+        '</tr>'
+    )
+
 
 def render_html(
-    benchmark_results: list[BenchmarkResult],
+    grouped_results: list[GroupedResult],
     results_dir: Path,
 ) -> str:
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    temperature_columns = [
-        (label, temperature_score_key(index))
-        for index, label in enumerate(collect_temperature_labels(benchmark_results))
-    ]
-    temperature_header_cells = render_temperature_header_cells(temperature_columns)
-    generators = sorted(
-        {result.generator for result in benchmark_results if result.generator}
-    )
-    opencode_versions = sorted(
-        {result.version for result in benchmark_results if result.generator.lower() == "opencode" and result.version}
-    )
-    pi_versions = sorted(
-        {result.version for result in benchmark_results if result.generator.lower() == "pi" and result.version}
-    )
-    companies = sorted(
-        {result.company for result in benchmark_results if result.company}
-    )
-    quantizations = sorted(
-        {result.quantization for result in benchmark_results if result.quantization}
-    )
+    companies = sorted({g.company for g in grouped_results if g.company})
+    quantizations = sorted({g.quantization for g in grouped_results if g.quantization})
     kv_cache_quantizations = sorted(
-        {
-            str(result.kv_cache_quantization)
-            for result in benchmark_results
-            if result.kv_cache_quantization is not None
-        }
+        {str(g.kv_cache_quantization) for g in grouped_results if g.kv_cache_quantization is not None}
     )
-    quantization_colors = build_tag_colors(
-        sorted({result.quantization or "n/a" for result in benchmark_results})
-    )
-    rows = "\n".join(
-        render_html_row(rank, result, quantization_colors, temperature_columns)
-        for rank, result in enumerate(benchmark_results, start=1)
+
+    rows_html = "\n".join(
+        render_html_row_grouped(rank, g)
+        for rank, g in enumerate(grouped_results, start=1)
     )
 
     return f"""<!doctype html>
@@ -525,6 +576,9 @@ def render_html(
       --worst-bg: #fee2e2;
       --worst-border: #f87171;
       --worst-text: #991b1b;
+      --sidebar-width: 280px;
+      --sidebar-collapsed: 32px;
+      --header-height: 100px;
     }}
 
     @media (prefers-color-scheme: dark) {{
@@ -547,43 +601,109 @@ def render_html(
       }}
     }}
 
-    * {{
-      box-sizing: border-box;
+    * {{ box-sizing: border-box; }}
+
+    html, body {{
+      height: 100%;
+      margin: 0;
     }}
 
     body {{
-      margin: 0;
       background: var(--bg);
       color: var(--text);
       font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       line-height: 1.45;
+      overflow: hidden;
     }}
 
     main {{
-      width: min(1500px, calc(100% - 32px));
-      margin: 0 auto;
-      padding: 32px 0;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      max-width: 100%;
+    }}
+
+    .header {{
+      flex-shrink: 0;
+      padding: 24px 32px 16px;
     }}
 
     h1 {{
       margin: 0 0 8px;
       font-size: 30px;
       font-weight: 700;
-      letter-spacing: 0;
     }}
 
     .meta {{
-      margin: 0 0 24px;
+      margin: 0;
       color: var(--muted);
       font-size: 14px;
     }}
 
-    .filters {{
-      display: grid;
-      grid-template-columns: minmax(240px, 1fr) repeat(4, minmax(150px, 220px));
-      gap: 12px;
-      align-items: end;
-      margin-bottom: 16px;
+    .layout-body {{
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+      padding: 0 32px 32px;
+    }}
+
+    .sidebar {{
+      position: relative;
+      width: var(--sidebar-width);
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      padding: 0 8px 0 0;
+      overflow-y: auto;
+      transition: width 0.2s ease, opacity 0.2s ease;
+    }}
+
+    .sidebar.collapsed {{
+      width: var(--sidebar-collapsed);
+      overflow: hidden;
+    }}
+
+    .sidebar.collapsed > .sidebar-filters {{
+      display: none;
+    }}
+
+    .sidebar-filters {{
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+    }}
+
+    .sidebar-toggle {{
+      flex-shrink: 0;
+      align-self: flex-end;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 12px;
+      line-height: 1;
+      padding: 0;
+      min-height: auto;
+    }}
+
+    .sidebar.collapsed > .sidebar-toggle {{
+      align-self: center;
+      margin-bottom: 8px;
+    }}
+
+    .sidebar-toggle:hover {{
+      color: var(--accent);
+      border-color: var(--accent);
     }}
 
     label {{
@@ -595,8 +715,7 @@ def render_html(
       text-transform: uppercase;
     }}
 
-    input,
-    select {{
+    input, select {{
       width: 100%;
       min-height: 38px;
       border: 1px solid var(--line);
@@ -613,26 +732,12 @@ def render_html(
       accent-color: var(--accent);
     }}
 
-    input:focus,
-    select:focus,
-    button:focus {{
-      outline: 2px solid var(--accent);
-      outline-offset: 2px;
-    }}
-
-    .score-range {{
-      gap: 8px;
-    }}
+    .score-range {{ gap: 8px; }}
 
     .range-fields {{
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 8px;
-    }}
-
-    .range-fields input {{
-      min-height: 34px;
-      font-variant-numeric: tabular-nums;
     }}
 
     .range-slider {{
@@ -642,24 +747,17 @@ def render_html(
       height: 26px;
     }}
 
-    .range-base,
-    .range-fill {{
+    .range-base, .range-fill {{
       position: absolute;
       top: 50%;
-      right: 0;
-      left: 0;
+      right: 0; left: 0;
       height: var(--range-track-height);
       border-radius: 999px;
       transform: translateY(-50%);
     }}
 
-    .range-base {{
-      background: color-mix(in srgb, var(--line) 82%, var(--text) 18%);
-    }}
-
-    .range-fill {{
-      background: var(--accent);
-    }}
+    .range-base {{ background: color-mix(in srgb, var(--line) 82%, var(--text) 18%); }}
+    .range-fill {{ background: var(--accent); }}
 
     .range-slider input {{
       position: absolute;
@@ -672,11 +770,7 @@ def render_html(
       pointer-events: none;
     }}
 
-    .range-slider input::-webkit-slider-runnable-track {{
-      height: var(--range-track-height);
-      background: transparent;
-    }}
-
+    .range-slider input::-webkit-slider-runnable-track,
     .range-slider input::-moz-range-track {{
       height: var(--range-track-height);
       background: transparent;
@@ -706,37 +800,16 @@ def render_html(
       pointer-events: auto;
     }}
 
-    .column-options {{
+    .table-area {{
+      flex: 1;
       display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin: -4px 0 16px;
-    }}
-
-    .check-option {{
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      min-height: 34px;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      background: var(--panel);
-      color: var(--text);
-      cursor: pointer;
-      font-size: 13px;
-      font-weight: 700;
-      padding: 7px 10px;
-      text-transform: none;
-    }}
-
-    .check-option input {{
-      width: 16px;
-      min-height: 16px;
-      margin: 0;
-      accent-color: var(--accent);
+      flex-direction: column;
+      min-width: 0;
+      overflow: hidden;
     }}
 
     .summary {{
+      flex-shrink: 0;
       display: flex;
       justify-content: space-between;
       gap: 16px;
@@ -763,21 +836,22 @@ def render_html(
     }}
 
     .table-wrap {{
-      overflow: auto;
+      flex: 1;
+      min-height: 0;
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
       box-shadow: var(--shadow);
+      overflow-y: auto;
+      overflow-x: auto;
     }}
 
     table {{
       width: 100%;
       border-collapse: collapse;
-      min-width: 1180px;
     }}
 
-    th,
-    td {{
+    th, td {{
       border-bottom: 1px solid var(--line);
       padding: 10px 12px;
       text-align: left;
@@ -797,52 +871,20 @@ def render_html(
       cursor: pointer;
     }}
 
-    th[data-key]:not(.group-heading)::after,
-    th.group-heading[data-key][rowspan="2"]::after {{
+    th[data-key]::after {{
       content: " <>";
       color: var(--muted);
       font-weight: 400;
     }}
 
-    th[data-key]:not(.group-heading)[data-sort-active="asc"]::after,
-    th.group-heading[data-key][rowspan="2"][data-sort-active="asc"]::after {{
-      content: " ^";
-      color: var(--accent);
-    }}
+    th[data-key][data-sort-active="asc"]::after {{ content: " ^"; color: var(--accent); }}
+    th[data-key][data-sort-active="desc"]::after {{ content: " v"; color: var(--accent); }}
 
-    th[data-key]:not(.group-heading)[data-sort-active="desc"]::after,
-    th.group-heading[data-key][rowspan="2"][data-sort-active="desc"]::after {{
-      content: " v";
-      color: var(--accent);
-    }}
+    td.numeric, th.numeric {{ text-align: right; }}
 
-    thead tr:first-child th {{
-      top: 0;
-    }}
+    tbody tr:hover {{ background: rgb(23 107 135 / 8%); }}
 
-    thead tr:nth-child(2) th {{
-      top: 33px;
-    }}
-
-    td.numeric,
-    th.numeric {{
-      text-align: right;
-    }}
-
-    th.group-heading {{
-      text-align: right;
-    }}
-
-    th.group-heading[data-expanded="true"] {{
-      text-align: center;
-    }}
-
-    tbody tr:hover {{
-      background: rgb(23 107 135 / 8%);
-    }}
-
-    td.extreme-best,
-    td.extreme-worst {{
+    td.extreme-best, td.extreme-worst {{
       border-left: 3px solid transparent;
       font-weight: 800;
     }}
@@ -859,9 +901,7 @@ def render_html(
       color: var(--worst-text);
     }}
 
-    .model {{
-      font-weight: 700;
-    }}
+    .model {{ font-weight: 700; }}
 
     .model-button {{
       min-height: auto;
@@ -882,223 +922,6 @@ def render_html(
       text-decoration: underline;
     }}
 
-    .tag {{
-      display: inline-flex;
-      align-items: center;
-      min-height: 22px;
-      border: 1px solid var(--tag-border);
-      border-radius: 999px;
-      background: var(--tag-bg);
-      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tag-border) 68%, transparent);
-      color: var(--tag-text);
-      font-size: 12px;
-      font-weight: 700;
-      padding: 2px 9px;
-    }}
-
-    .chart-section {{
-      margin-top: 20px;
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      box-shadow: var(--shadow);
-      padding: 16px;
-    }}
-
-    .chart-header {{
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      margin-bottom: 12px;
-    }}
-
-    .chart-header h2 {{
-      margin: 0;
-      font-size: 16px;
-      letter-spacing: 0;
-    }}
-
-    .chart-header span {{
-      color: var(--muted);
-      font-size: 13px;
-    }}
-
-    .score-chart {{
-      display: grid;
-      gap: 8px;
-    }}
-
-    .chart-row {{
-      display: grid;
-      grid-template-columns: minmax(260px, 460px) minmax(120px, 1fr) 56px;
-      gap: 10px;
-      align-items: center;
-    }}
-
-    .chart-label {{
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(48px, 84px) minmax(72px, 120px);
-      gap: 8px;
-      align-items: baseline;
-      overflow: hidden;
-      font-size: 13px;
-    }}
-
-    .chart-label > span {{
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }}
-
-    .chart-label .chart-model {{
-      color: var(--text);
-      font-weight: 700;
-    }}
-
-    .chart-label .chart-quant,
-    .chart-label .chart-generator {{
-      color: var(--muted);
-    }}
-
-    .chart-track {{
-      height: 18px;
-      overflow: hidden;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      background: color-mix(in srgb, var(--panel) 76%, var(--text) 10%);
-    }}
-
-    .chart-bar {{
-      height: 100%;
-      min-width: 2px;
-      border-radius: 999px;
-      background: linear-gradient(90deg, var(--accent), var(--accent-strong));
-    }}
-
-    .chart-value {{
-      color: var(--text);
-      font-size: 13px;
-      font-variant-numeric: tabular-nums;
-      font-weight: 700;
-      text-align: right;
-    }}
-
-    .tradeoff-chart {{
-      display: grid;
-      gap: 12px;
-    }}
-
-    .tradeoff-plot {{
-      position: relative;
-      min-height: 340px;
-      overflow: hidden;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background:
-        linear-gradient(var(--line) 1px, transparent 1px),
-        linear-gradient(90deg, var(--line) 1px, transparent 1px),
-        color-mix(in srgb, var(--panel) 92%, var(--text) 4%);
-      background-size: 100% 25%, 25% 100%, 100% 100%;
-      padding: 28px 34px 42px 58px;
-    }}
-
-    .tradeoff-inner {{
-      position: relative;
-      height: 270px;
-      border-left: 1px solid var(--muted);
-      border-bottom: 1px solid var(--muted);
-    }}
-
-    .scatter-point {{
-      position: absolute;
-      width: 14px;
-      height: 14px;
-      min-height: 14px;
-      border: 2px solid var(--panel);
-      border-radius: 999px;
-      background: var(--point-color);
-      box-shadow: 0 0 0 1px color-mix(in srgb, var(--point-color) 78%, #000000 22%), 0 2px 8px rgb(0 0 0 / 22%);
-      cursor: pointer;
-      padding: 0;
-      transform: translate(-50%, 50%);
-    }}
-
-    .scatter-point:hover,
-    .scatter-point:focus {{
-      border-color: var(--text);
-      transform: translate(-50%, 50%) scale(1.2);
-    }}
-
-    .axis-label {{
-      position: absolute;
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 700;
-      text-transform: uppercase;
-    }}
-
-    .axis-label-x {{
-      right: 34px;
-      bottom: 12px;
-    }}
-
-    .axis-label-y {{
-      top: 24px;
-      left: 14px;
-      transform: rotate(-90deg);
-      transform-origin: left top;
-    }}
-
-    .axis-value {{
-      position: absolute;
-      color: var(--muted);
-      font-size: 12px;
-      font-variant-numeric: tabular-nums;
-    }}
-
-    .axis-x-min {{
-      left: 58px;
-      bottom: 18px;
-    }}
-
-    .axis-x-max {{
-      right: 34px;
-      bottom: 18px;
-    }}
-
-    .axis-y-min {{
-      left: 18px;
-      bottom: 40px;
-    }}
-
-    .axis-y-max {{
-      left: 18px;
-      top: 22px;
-    }}
-
-    .tradeoff-legend {{
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px 12px;
-    }}
-
-    .legend-item {{
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 700;
-    }}
-
-    .legend-dot {{
-      width: 10px;
-      height: 10px;
-      border-radius: 999px;
-      background: var(--point-color);
-      box-shadow: 0 0 0 1px color-mix(in srgb, var(--point-color) 78%, #000000 22%);
-    }}
-
     .empty {{
       display: none;
       padding: 24px;
@@ -1106,212 +929,165 @@ def render_html(
       text-align: center;
     }}
 
+    .sidebar-overlay {{
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgb(0 0 0 / 40%);
+      z-index: 8;
+    }}
+
     @media (max-width: 900px) {{
-      main {{
-        width: min(100% - 20px, 1500px);
-        padding: 20px 0;
-      }}
+      .header {{ padding: 20px 16px 12px; }}
+      .layout-body {{ padding: 0 16px 16px; }}
+      .summary {{ display: grid; }}
+    }}
 
-      .filters {{
-        grid-template-columns: 1fr;
+    @media (max-width: 599px) {{
+      .header {{ padding-top: var(--sidebar-collapsed); }}
+      .sidebar {{
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: var(--sidebar-width);
+        height: 100vh;
+        background: var(--panel);
+        z-index: 10;
+        padding: 48px 16px 16px;
+        box-shadow: var(--shadow);
       }}
-
-      .summary {{
-        display: grid;
+      .sidebar.collapsed {{
+        width: var(--sidebar-collapsed);
       }}
-
-      .chart-row {{
-        grid-template-columns: 1fr 64px;
-      }}
-
-      .chart-label {{
-        grid-column: 1 / -1;
-      }}
-
-      .tradeoff-plot {{
-        min-height: 300px;
-        padding: 24px 20px 40px 48px;
-      }}
-
-      .tradeoff-inner {{
-        height: 230px;
-      }}
-
-      .axis-x-min {{
-        left: 48px;
-      }}
-
-      .axis-x-max,
-      .axis-label-x {{
-        right: 20px;
-      }}
+      .sidebar-overlay.active {{ display: block; }}
     }}
   </style>
 </head>
 <body>
   <main>
-    <h1>LLM Benchmark Results</h1>
-    <p class="meta">
-      Generated at <code>{escape_html(generated_at)}</code> from
-      <code>{escape_html(str(results_dir))}</code>.
-    </p>
-
-    <section class="filters" aria-label="Table filters">
-      <label>
-        Search
-        <input id="search" type="search" placeholder="Generator, model, company, quantization, task...">
-      </label>
-       <label>
-         Generator
-         <select id="generator">
-           <option value="">All generators</option>
-           {render_options(generators)}
-         </select>
-       </label>
-       <label>
-         OpenCode Version
-         <select id="opencodeVersion">
-           <option value="">All OpenCode versions</option>
-           {render_options(opencode_versions)}
-         </select>
-       </label>
-       <label>
-         Pi Version
-         <select id="piVersion">
-           <option value="">All Pi versions</option>
-           {render_options(pi_versions)}
-         </select>
-       </label>
-       <label>
-         Company
-         <select id="company">
-           <option value="">All companies</option>
-           {render_options(companies)}
-         </select>
-       </label>
-      <label>
-        Quantization
-        <select id="quantization">
-          <option value="">All quantizations</option>
-          {render_options(quantizations)}
-        </select>
-      </label>
-      <label>
-        KV cache
-        <select id="kvCacheQuant">
-          <option value="">All KV caches</option>
-          {render_options(kv_cache_quantizations)}
-        </select>
-      </label>
-      <label class="score-range">
-        Final score range
-        <span class="range-fields">
-          <input id="min-score" type="number" min="0" max="100" step="0.01" value="0" aria-label="Minimum final score">
-          <input id="max-score" type="number" min="0" max="100" step="0.01" value="100" aria-label="Maximum final score">
-        </span>
-        <span class="range-slider" aria-hidden="true">
-          <span class="range-base"></span>
-          <span class="range-fill" id="score-range-fill"></span>
-          <input id="min-score-slider" type="range" min="0" max="100" step="0.01" value="0" tabindex="-1">
-          <input id="max-score-slider" type="range" min="0" max="100" step="0.01" value="100" tabindex="-1">
-        </span>
-      </label>
-    </section>
-
-    <section class="column-options" aria-label="Column visibility">
-      <label class="check-option">
-        <input id="show-token-columns" type="checkbox">
-        Show max token task columns
-      </label>
-      <label class="check-option">
-        <input id="show-score-columns" type="checkbox">
-        Show Easy/Medium/Hard scores
-      </label>
-       <label class="check-option" title="Displays the per-temperature scores from full benchmark runs, or the per-temperature scores from the discovery round when discovery mode was used.">
-         <input id="show-temperature-columns" type="checkbox">
-         Show temperature scores
-       </label>
-        <label class="check-option">
-          <input id="show-version-column" type="checkbox">
-          Show version column
-        </label>
-        <label class="check-option">
-          <input id="show-context-limit-column" type="checkbox">
-          Show context limit column
-        </label>
-      </section>
-
-    <div class="summary">
-      <span id="visible-count">Showing {len(benchmark_results)} of {len(benchmark_results)} runs</span>
-      <button id="reset" type="button">Reset filters</button>
+    <div class="header">
+      <h1>LLM Benchmark Results</h1>
+      <p class="meta">
+        Generated at <code>{escape_html(generated_at)}</code> from
+        <code>{escape_html(str(results_dir))}</code>.
+      </p>
     </div>
 
-    <div class="table-wrap">
-      <table id="results-table">
-        <thead>
-          <tr>
-            <th class="numeric" rowspan="2" data-key="rank" data-type="number">Rank</th>
-            <th rowspan="2" data-key="generator" data-type="text">Generator</th>
-            <th rowspan="2" data-key="version" data-type="text" data-column-group="version" hidden>Version</th>
-            <th class="numeric" rowspan="2" data-key="contextLimit" data-type="number" data-column-group="contextlimit" hidden>Context</th>
-            <th rowspan="2" data-key="model" data-type="text">Model</th>
-            <th rowspan="2" data-key="company" data-type="text">Company</th>
-            <th rowspan="2" data-key="quantization" data-type="text" title="Quantization" aria-label="Quantization">Quant.</th>
-            <th rowspan="2" data-key="kvCacheQuant" data-type="text" title="KV cache quantization" aria-label="KV cache quantization">KV Q</th>
-            <th class="numeric" rowspan="2" data-key="totalSeconds" data-type="number">Total time</th>
-            <th id="token-group-heading" class="group-heading" colspan="1" rowspan="2" data-key="totalTokens" data-type="number">Total tokens</th>
-            <th class="numeric" rowspan="2" data-key="tokensPerSecond" data-type="number">Tokens/s</th>
-            <th id="score-group-heading" class="group-heading" colspan="1" rowspan="2" data-key="finalScore" data-type="number">Score final</th>
-            <th id="temperature-group-heading" class="group-heading" colspan="1" rowspan="2" data-key="selectedTemperature" data-type="number">Best temp</th>
-          </tr>
-          <tr id="secondary-header-row" hidden>
-            <th id="total-token-heading" class="numeric" data-key="totalTokens" data-type="number" hidden>Total</th>
-            <th class="numeric" data-key="highestTokenTaskTotalTokens" data-type="number" data-column-group="token" hidden>Max task</th>
-            <th data-key="highestTokenTaskId" data-type="text" data-column-group="token" hidden>Task</th>
-            <th class="numeric" data-key="easyScore" data-type="number" data-column-group="score" hidden>Easy</th>
-            <th class="numeric" data-key="mediumScore" data-type="number" data-column-group="score" hidden>Medium</th>
-            <th class="numeric" data-key="hardScore" data-type="number" data-column-group="score" hidden>Hard</th>
-            <th id="final-score-heading" class="numeric" data-key="finalScore" data-type="number" hidden>Final</th>
-            <th id="selected-temperature-heading" class="numeric" data-key="selectedTemperature" data-type="number" hidden>Best</th>
-            {temperature_header_cells}
-          </tr>
-        </thead>
-        <tbody>
-{rows}
-        </tbody>
-      </table>
-      <div class="empty" id="empty">No benchmark runs match the current filters.</div>
+    <div class="layout-body">
+      <aside class="sidebar" id="sidebar" aria-label="Table filters">
+        <div class="sidebar-filters">
+          <label>
+            Search
+            <input id="search" type="search" placeholder="Model, company, quantization...">
+          </label>
+          <label>
+            Company
+            <select id="company">
+              <option value="">All companies</option>
+              {render_options(companies)}
+            </select>
+          </label>
+          <label>
+            Quantization
+            <select id="quantization">
+              <option value="">All quantizations</option>
+              {render_options(quantizations)}
+            </select>
+          </label>
+          <label>
+            KV cache
+            <select id="kvCacheQuant">
+              <option value="">All KV caches</option>
+            {render_options(kv_cache_quantizations)}
+          </select>
+        </label>
+        <label class="score-range">
+          Avg score range
+          <span class="range-fields">
+            <input id="min-score" type="number" min="0" max="100" step="0.1" value="0" aria-label="Minimum avg score">
+            <input id="max-score" type="number" min="0" max="100" step="0.1" value="100" aria-label="Maximum avg score">
+          </span>
+          <span class="range-slider" aria-hidden="true">
+            <span class="range-base"></span>
+            <span class="range-fill" id="score-range-fill"></span>
+            <input id="min-score-slider" type="range" min="0" max="100" step="0.1" value="0" tabindex="-1">
+            <input id="max-score-slider" type="range" min="0" max="100" step="0.1" value="100" tabindex="-1">
+          </span>
+        </label>
+        </div>
+        <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle filters">◀</button>
+      </aside>
+
+      <div class="table-area">
+        <div class="summary">
+          <span id="visible-count">Showing {len(grouped_results)} of {len(grouped_results)} groups</span>
+          <button id="reset" type="button">Reset filters</button>
+        </div>
+        <div class="table-wrap">
+          <table id="results-table">
+            <thead>
+              <tr>
+                <th class="numeric" data-key="rank" data-type="number">Rank</th>
+                <th data-key="model" data-type="text">Model</th>
+                <th data-key="company" data-type="text">Company</th>
+                <th data-key="quantization" data-type="text">Quantization</th>
+                <th data-key="kvCacheQuant" data-type="text">KV Cache</th>
+                <th class="numeric" data-key="contextLimit" data-type="number">Context Size</th>
+                <th class="numeric" data-key="scoreLlm" data-type="number">Score LLM</th>
+                <th class="numeric" data-key="scorePi" data-type="number">Score Pi</th>
+                <th class="numeric" data-key="scoreOpencode" data-type="number">Score OpenCode</th>
+                <th class="numeric" data-key="avgScore" data-type="number">Avg Score</th>
+                <th class="numeric" data-key="maxScore" data-type="number">Max Score</th>
+              </tr>
+            </thead>
+            <tbody>
+{rows_html}
+            </tbody>
+          </table>
+          <div class="empty" id="empty">No configuration groups match the current filters.</div>
+        </div>
+      </div>
     </div>
 
-    <section class="chart-section" aria-label="Final score chart">
-      <div class="chart-header">
-        <h2>Final Score</h2>
-        <span id="chart-count"></span>
-      </div>
-      <div class="score-chart" id="score-chart"></div>
-    </section>
-
-    <section class="chart-section" aria-label="Final score by total time chart">
-      <div class="chart-header">
-        <h2>Score vs Time</h2>
-        <span id="tradeoff-count"></span>
-      </div>
-      <div class="tradeoff-chart">
-        <div class="tradeoff-plot" id="tradeoff-plot"></div>
-        <div class="tradeoff-legend" id="tradeoff-legend"></div>
-      </div>
-    </section>
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
   </main>
 
   <script>
+    (function() {{
+      const sidebar = document.querySelector("#sidebar");
+      const chevron = document.querySelector("#sidebar-toggle");
+      const overlay = document.querySelector("#sidebar-overlay");
+      const sidebarKey = "csharp-llm-benchmark:sidebar";
+
+      function setCollapsed(collapsed) {{
+        sidebar.classList.toggle("collapsed", collapsed);
+        chevron.textContent = collapsed ? "\u25B6" : "\u25C0";
+        localStorage.setItem(sidebarKey, collapsed ? "1" : "0");
+        if (collapsed) {{
+          overlay.classList.remove("active");
+        }}
+      }}
+
+      const saved = localStorage.getItem(sidebarKey);
+      if (saved === "1") setCollapsed(true);
+
+      chevron.addEventListener("click", () => {{
+        const collapsed = sidebar.classList.contains("collapsed");
+        if (!collapsed && window.innerWidth < 600) {{
+          overlay.classList.add("active");
+        }}
+        setCollapsed(!collapsed);
+      }});
+
+      overlay.addEventListener("click", () => setCollapsed(true));
+
+    }})();
+
     const table = document.querySelector("#results-table");
     const tbody = table.querySelector("tbody");
     const rows = Array.from(tbody.querySelectorAll("tr"));
     const filters = {{
       search: document.querySelector("#search"),
-      generator: document.querySelector("#generator"),
-      opencodeVersion: document.querySelector("#opencodeVersion"),
-      piVersion: document.querySelector("#piVersion"),
       company: document.querySelector("#company"),
       quantization: document.querySelector("#quantization"),
       kvCacheQuant: document.querySelector("#kvCacheQuant"),
@@ -1323,38 +1099,11 @@ def render_html(
       maxSlider: document.querySelector("#max-score-slider"),
       fill: document.querySelector("#score-range-fill"),
     }};
-    const columnToggles = {{
-      token: document.querySelector("#show-token-columns"),
-      score: document.querySelector("#show-score-columns"),
-      temperature: document.querySelector("#show-temperature-columns"),
-      version: document.querySelector("#show-version-column"),
-      contextlimit: document.querySelector("#show-context-limit-column"),
-    }};
     const visibleCount = document.querySelector("#visible-count");
-    const empty = document.querySelector("#empty");
-    const reset = document.querySelector("#reset");
-    const secondaryHeaderRow = document.querySelector("#secondary-header-row");
-    const tokenGroupHeading = document.querySelector("#token-group-heading");
-    const scoreGroupHeading = document.querySelector("#score-group-heading");
-    const temperatureGroupHeading = document.querySelector("#temperature-group-heading");
-    const totalTokenHeading = document.querySelector("#total-token-heading");
-    const finalScoreHeading = document.querySelector("#final-score-heading");
-    const selectedTemperatureHeading = document.querySelector("#selected-temperature-heading");
-    const scoreChart = document.querySelector("#score-chart");
-    const chartCount = document.querySelector("#chart-count");
-    const tradeoffPlot = document.querySelector("#tradeoff-plot");
-    const tradeoffLegend = document.querySelector("#tradeoff-legend");
-    const tradeoffCount = document.querySelector("#tradeoff-count");
+    const emptyEl = document.querySelector("#empty");
+    const resetBtn = document.querySelector("#reset");
     const storageKey = `csharp-llm-benchmark:filters:${{window.location.pathname}}`;
-    let sortState = {{ key: "rank", direction: "asc", type: "number" }};
-    let isRestoringState = false;
-    const extremeRules = [
-      {{ key: "finalScore", best: "max" }},
-      {{ key: "totalSeconds", best: "min" }},
-      {{ key: "totalTokens", best: "min" }},
-      {{ key: "highestTokenTaskTotalTokens", best: "min" }},
-      {{ key: "tokensPerSecond", best: "max" }},
-    ];
+    let sortState = {{ key: "avgScore", direction: "desc", type: "number" }};
 
     function normalize(value) {{
       return (value || "").toString().trim().toLowerCase();
@@ -1369,139 +1118,15 @@ def render_html(
       return normalize(row.dataset[key]);
     }}
 
-    function visibleTableRows() {{
-      return Array.from(tbody.querySelectorAll("tr")).filter((row) => !row.hidden);
-    }}
-
-    function browserStorage() {{
-      try {{
-        const storage = window.localStorage;
-        const testKey = `${{storageKey}}:test`;
-        storage.setItem(testKey, "1");
-        storage.removeItem(testKey);
-        return storage;
-      }} catch (_error) {{
-        return null;
-      }}
-    }}
-
-    function readStoredState() {{
-      const storage = browserStorage();
-      if (storage === null) {{
-        return null;
-      }}
-      try {{
-        const value = storage.getItem(storageKey);
-        return value ? JSON.parse(value) : null;
-      }} catch (_error) {{
-        return null;
-      }}
-    }}
-
-    function selectHasValue(select, value) {{
-      return Array.from(select.options).some((option) => option.value === value);
-    }}
-
-    function sortHeaderForKey(key) {{
-      return Array.from(table.querySelectorAll("th[data-key]"))
-        .find((header) => header.dataset.key === key) || null;
-    }}
-
-    function saveBrowserState() {{
-      if (isRestoringState) {{
-        return;
-      }}
-      const storage = browserStorage();
-      if (storage === null) {{
-        return;
-      }}
-      const state = {{
-        version: 2,
-        filters: {{
-          search: filters.search.Svalue,
-          generator: filters.generator.value,
-          opencodeVersion: filters.opencodeVersion.value,
-          piVersion: filters.piVersion.value,
-          company: filters.company.value,
-          quantization: filters.quantization.value,
-          kvCacheQuant: filters.kvCacheQuant.value,
-          minScore: scoreRange.minInput.value,
-          maxScore: scoreRange.maxInput.value,
-        }},
-        columns: {{
-          token: columnToggles.token.checked,
-          score: columnToggles.score.checked,
-          temperature: columnToggles.temperature.checked,
-          version: columnToggles.version.checked,
-          contextlimit: columnToggles.contextlimit.checked,
-        }},
-        sort: sortState,
-      }};
-      try {{
-        storage.setItem(storageKey, JSON.stringify(state));
-      }} catch (_error) {{
-      }}
-    }}
-
-    function restoreBrowserState() {{
-      const state = readStoredState();
-      if (state === null || typeof state !== "object") {{
-        return;
-      }}
-
-      isRestoringState = true;
-      const storedFilters = state.filters || {{}};
-      filters.search.value = typeof storedFilters.search === "string" ? storedFilters.search : "";
-      filters.generator.value = selectHasValue(filters.generator, storedFilters.generator) ? storedFilters.generator : "";
-      filters.company.value = selectHasValue(filters.company, storedFilters.company) ? storedFilters.company : "";
-      filters.quantization.value = selectHasValue(filters.quantization, storedFilters.quantization) ? storedFilters.quantization : "";
-      filters.kvCacheQuant.value = selectHasValue(filters.kvCacheQuant, storedFilters.kvCacheQuant) ? storedFilters.kvCacheQuant : "";
-      setScoreRange(
-        clampScore(storedFilters.minScore, 0),
-        clampScore(storedFilters.maxScore, 100),
-      );
-      syncScoreRange("min", false);
-
-      const storedColumns = state.columns || {{}};
-      columnToggles.token.checked = storedColumns.token === true;
-      columnToggles.score.checked = storedColumns.score === true;
-      columnToggles.temperature.checked = storedColumns.temperature === true;
-      columnToggles.version.checked = storedColumns.version === true;
-      columnToggles.contextlimit.checked = storedColumns.contextlimit === true;
-
-      const storedSort = state.sort || {{}};
-      const sortHeader = sortHeaderForKey(storedSort.key);
-      if (
-        sortHeader !== null &&
-        (storedSort.direction === "asc" || storedSort.direction === "desc")
-      ) {{
-        sortState = {{
-          key: storedSort.key,
-          direction: storedSort.direction,
-          type: storedSort.type === "text" ? "text" : "number",
-        }};
-      }}
-      isRestoringState = false;
-    }}
-
-    function formatDurationLabel(totalSeconds) {{
-      const seconds = Math.max(0, Math.round(totalSeconds));
-      const hours = Math.floor(seconds / 3600);
-      const minutes = Math.floor((seconds % 3600) / 60);
-      const remainingSeconds = seconds % 60;
-      return `${{hours.toString().padStart(2, "0")}}:${{minutes.toString().padStart(2, "0")}}:${{remainingSeconds.toString().padStart(2, "0")}}`;
-    }}
-
     function clampScore(value, fallback) {{
       const number = Number(value);
-      if (!Number.isFinite(number)) {{
-        return fallback;
-      }}
+      if (!Number.isFinite(number)) return fallback;
       return Math.max(0, Math.min(100, number));
     }}
 
     function formatScoreInput(value) {{
-      return Number.isInteger(value) ? value.toString() : value.toFixed(2).replace(/0+$/, "").replace(/\\.$/, "");
+      const v = Number(value);
+      return Number.isInteger(v) ? v.toString() : v.toFixed(1).replace(/\\.0$/, "");
     }}
 
     function setScoreRange(minScore, maxScore) {{
@@ -1516,64 +1141,26 @@ def render_html(
     function syncScoreRange(changedSide, shouldApply = true) {{
       let minScore = clampScore(scoreRange.minInput.value, 0);
       let maxScore = clampScore(scoreRange.maxInput.value, 100);
-
-      if (changedSide === "min" && minScore > maxScore) {{
-        maxScore = minScore;
-      }} else if (changedSide === "max" && maxScore < minScore) {{
-        minScore = maxScore;
-      }} else if (minScore > maxScore) {{
-        const previousMin = minScore;
-        minScore = maxScore;
-        maxScore = previousMin;
-      }}
-
+      if (changedSide === "min" && minScore > maxScore) maxScore = minScore;
+      else if (changedSide === "max" && maxScore < minScore) minScore = maxScore;
       setScoreRange(minScore, maxScore);
-      if (shouldApply) {{
-        applyFilters();
-      }}
+      if (shouldApply) applyFilters();
     }}
 
     function rowMatches(row) {{
       const query = normalize(filters.search.value);
-      const generator = filters.generator.value;
-      const opencodeVersion = filters.opencodeVersion.value;
-      const piVersion = filters.piVersion.value;
       const company = filters.company.value;
       const quantization = filters.quantization.value;
       const kvCacheQuant = filters.kvCacheQuant.value;
       const minScore = clampScore(scoreRange.minInput.value, 0);
       const maxScore = clampScore(scoreRange.maxInput.value, 100);
 
-      if (query && !normalize(row.dataset.search).includes(query)) {{
-        return false;
-      }}
-      if (generator && row.dataset.generator !== generator) {{
-        return false;
-      }}
-
-      const rowVersion = row.dataset.version;
-      const rowGenerator = row.dataset.generator.toLowerCase();
-      const matchesOpenCodeVersion = (opencodeVersion && rowGenerator === "opencode" && rowVersion === opencodeVersion);
-      const matchesPiVersion = (piVersion && rowGenerator === "pi" && rowVersion === piVersion);
-      const versionFilterActive = (opencodeVersion || piVersion);
-
-      if (versionFilterActive && !matchesOpenCodeVersion && !matchesPiVersion) {{
-        return false;
-      }}
-
-      if (company && row.dataset.company !== company) {{
-        return false;
-      }}
-      if (quantization && row.dataset.quantization !== quantization) {{
-        return false;
-      }}
-      if (kvCacheQuant && row.dataset.kvCacheQuant !== kvCacheQuant) {{
-        return false;
-      }}
-      const finalScore = numberValue(row, "finalScore");
-      if (finalScore < minScore || finalScore > maxScore) {{
-        return false;
-      }}
+      if (query && !normalize(row.dataset.search).includes(query)) return false;
+      if (company && row.dataset.company !== company) return false;
+      if (quantization && row.dataset.quantization !== quantization) return false;
+      if (kvCacheQuant && row.dataset.kvCacheQuant !== kvCacheQuant) return false;
+      const avgScore = numberValue(row, "avgScore");
+      if (avgScore < minScore || avgScore > maxScore) return false;
       return true;
     }}
 
@@ -1592,41 +1179,35 @@ def render_html(
     function applyExtremes() {{
       clearExtremes();
       const visibleRows = rows.filter((row) => !row.hidden);
-      if (visibleRows.length < 2) {{
-        return;
-      }}
+      if (visibleRows.length < 2) return;
+
+      const extremeRules = [
+        {{ key: "avgScore", best: "max" }},
+        {{ key: "maxScore", best: "max" }},
+        {{ key: "scoreLlm", best: "max" }},
+        {{ key: "scorePi", best: "max" }},
+        {{ key: "scoreOpencode", best: "max" }},
+      ];
 
       for (const rule of extremeRules) {{
         const cells = [];
         for (const row of visibleRows) {{
           const value = Number(row.dataset[rule.key]);
+          if (!Number.isFinite(value)) continue;
           const cell = row.querySelector(`[data-extreme-key="${{rule.key}}"]`);
-          if (!cell || cell.hidden || !Number.isFinite(value)) {{
-            continue;
-          }}
+          if (!cell) continue;
           cells.push({{ cell, value }});
         }}
-
-        if (cells.length < 2) {{
-          continue;
-        }}
-
+        if (cells.length < 2) continue;
         const values = cells.map((item) => item.value);
         const min = Math.min(...values);
         const max = Math.max(...values);
-        if (min === max) {{
-          continue;
-        }}
-
+        if (min === max) continue;
         const bestValue = rule.best === "max" ? max : min;
         const worstValue = rule.best === "max" ? min : max;
         for (const item of cells) {{
-          if (item.value === bestValue) {{
-            item.cell.classList.add("extreme-best");
-          }}
-          if (item.value === worstValue) {{
-            item.cell.classList.add("extreme-worst");
-          }}
+          if (item.value === bestValue) item.cell.classList.add("extreme-best");
+          if (item.value === worstValue) item.cell.classList.add("extreme-worst");
         }}
       }}
     }}
@@ -1638,12 +1219,9 @@ def render_html(
         row.hidden = !matches;
         if (matches) visible += 1;
       }}
-      visibleCount.textContent = `Showing ${{visible}} of ${{rows.length}} runs`;
-      empty.style.display = visible === 0 ? "block" : "none";
+      visibleCount.textContent = `Showing ${{visible}} of ${{rows.length}} groups`;
+      emptyEl.style.display = visible === 0 ? "block" : "none";
       applyExtremes();
-      renderScoreChart();
-      renderTradeoffChart();
-      saveBrowserState();
     }}
 
     function applySort() {{
@@ -1658,188 +1236,6 @@ def render_html(
         tbody.appendChild(row);
       }}
       applyExtremes();
-      renderScoreChart();
-      renderTradeoffChart();
-      saveBrowserState();
-    }}
-
-    function renderScoreChart() {{
-      const visibleRows = visibleTableRows();
-      const chartRows = visibleRows
-        .map((row) => {{
-          const score = Number(row.dataset.finalScore);
-          return {{
-            generator: row.dataset.generator || "",
-            model: row.dataset.model || "n/a",
-            quantization: row.dataset.quantization || "",
-            score: Number.isFinite(score) ? score : null,
-          }};
-        }})
-        .filter((row) => row.score !== null);
-
-      scoreChart.replaceChildren();
-      chartCount.textContent = `${{chartRows.length}} visible runs`;
-
-      if (chartRows.length === 0) {{
-        const emptyChart = document.createElement("div");
-        emptyChart.className = "empty";
-        emptyChart.style.display = "block";
-        emptyChart.textContent = "No final scores match the current filters.";
-        scoreChart.appendChild(emptyChart);
-        return;
-      }}
-
-      for (const row of chartRows) {{
-        const modelText = row.model;
-        const quantText = row.quantization && row.quantization !== "-" ? row.quantization : "";
-        const generatorText = row.generator || "";
-        const label = [modelText, quantText, generatorText].filter(Boolean).join(" · ");
-        const score = Math.max(0, Math.min(100, row.score));
-
-        const chartRow = document.createElement("div");
-        chartRow.className = "chart-row";
-
-        const labelElement = document.createElement("div");
-        labelElement.className = "chart-label";
-        labelElement.title = label;
-
-        const modelCell = document.createElement("span");
-        modelCell.className = "chart-model";
-        modelCell.title = modelText;
-        modelCell.textContent = modelText;
-
-        const quantCell = document.createElement("span");
-        quantCell.className = "chart-quant";
-        quantCell.title = quantText;
-        quantCell.textContent = quantText;
-
-        const generatorCell = document.createElement("span");
-        generatorCell.className = "chart-generator";
-        generatorCell.title = generatorText;
-        generatorCell.textContent = generatorText;
-
-        labelElement.append(modelCell, quantCell, generatorCell);
-
-        const track = document.createElement("div");
-        track.className = "chart-track";
-        track.setAttribute("aria-label", `${{label}} final score ${{row.score.toFixed(2)}}`);
-
-        const bar = document.createElement("div");
-        bar.className = "chart-bar";
-        bar.style.width = `${{score}}%`;
-        track.appendChild(bar);
-
-        const value = document.createElement("div");
-        value.className = "chart-value";
-        value.textContent = row.score.toFixed(2);
-
-        chartRow.append(labelElement, track, value);
-        scoreChart.appendChild(chartRow);
-      }}
-    }}
-
-    function renderTradeoffChart() {{
-      const chartRows = visibleTableRows()
-        .map((row) => {{
-          const score = Number(row.dataset.finalScore);
-          const totalSeconds = Number(row.dataset.totalSeconds);
-          return {{
-            model: row.dataset.model || "n/a",
-            quantization: row.dataset.quantization || "n/a",
-            color: row.dataset.seriesColor || "#64748b",
-            score: Number.isFinite(score) ? score : null,
-            totalSeconds: Number.isFinite(totalSeconds) ? totalSeconds : null,
-          }};
-        }})
-        .filter((row) => row.score !== null && row.totalSeconds !== null);
-
-      tradeoffPlot.replaceChildren();
-      tradeoffLegend.replaceChildren();
-      tradeoffCount.textContent = `${{chartRows.length}} visible runs`;
-
-      if (chartRows.length === 0) {{
-        const emptyChart = document.createElement("div");
-        emptyChart.className = "empty";
-        emptyChart.style.display = "block";
-        emptyChart.textContent = "No score/time data match the current filters.";
-        tradeoffPlot.appendChild(emptyChart);
-        return;
-      }}
-
-      const minSeconds = Math.min(...chartRows.map((row) => row.totalSeconds));
-      const maxSeconds = Math.max(...chartRows.map((row) => row.totalSeconds));
-      const minScore = Math.min(...chartRows.map((row) => row.score));
-      const maxScore = Math.max(...chartRows.map((row) => row.score));
-      const secondRange = maxSeconds - minSeconds || 1;
-      const scoreRange = maxScore - minScore || 1;
-      const scale = (value, min, max, range) => max === min ? 50 : ((value - min) / range) * 100;
-
-      const plotInner = document.createElement("div");
-      plotInner.className = "tradeoff-inner";
-
-      const xLabel = document.createElement("div");
-      xLabel.className = "axis-label axis-label-x";
-      xLabel.textContent = "Total time";
-
-      const yLabel = document.createElement("div");
-      yLabel.className = "axis-label axis-label-y";
-      yLabel.textContent = "Final score";
-
-      const xMin = document.createElement("div");
-      xMin.className = "axis-value axis-x-min";
-      xMin.textContent = formatDurationLabel(minSeconds);
-
-      const xMax = document.createElement("div");
-      xMax.className = "axis-value axis-x-max";
-      xMax.textContent = formatDurationLabel(maxSeconds);
-
-      const yMin = document.createElement("div");
-      yMin.className = "axis-value axis-y-min";
-      yMin.textContent = minScore.toFixed(2);
-
-      const yMax = document.createElement("div");
-      yMax.className = "axis-value axis-y-max";
-      yMax.textContent = maxScore.toFixed(2);
-
-      for (const row of chartRows) {{
-        const label = row.quantization && row.quantization !== "-"
-          ? `${{row.model}} (${{row.quantization}})`
-          : row.model;
-        const point = document.createElement("button");
-        point.className = "scatter-point";
-        point.type = "button";
-        point.style.left = `${{scale(row.totalSeconds, minSeconds, maxSeconds, secondRange)}}%`;
-        point.style.bottom = `${{scale(row.score, minScore, maxScore, scoreRange)}}%`;
-        point.style.setProperty("--point-color", row.color);
-        point.title = `${{label}}: score ${{row.score.toFixed(2)}}, time ${{formatDurationLabel(row.totalSeconds)}}`;
-        point.setAttribute("aria-label", point.title);
-        point.addEventListener("click", () => toggleModelSearch(row.model));
-        plotInner.appendChild(point);
-      }}
-
-      tradeoffPlot.append(plotInner, xLabel, yLabel, xMin, xMax, yMin, yMax);
-
-      const legendItems = new Map();
-      for (const row of chartRows) {{
-        if (!legendItems.has(row.quantization)) {{
-          legendItems.set(row.quantization, row.color);
-        }}
-      }}
-
-      for (const [label, color] of legendItems) {{
-        const item = document.createElement("div");
-        item.className = "legend-item";
-
-        const dot = document.createElement("span");
-        dot.className = "legend-dot";
-        dot.style.setProperty("--point-color", color);
-
-        const text = document.createElement("span");
-        text.textContent = label || "n/a";
-
-        item.append(dot, text);
-        tradeoffLegend.appendChild(item);
-      }}
     }}
 
     function updateSortIndicators(activeHeader) {{
@@ -1849,53 +1245,12 @@ def render_html(
       activeHeader.dataset.sortActive = sortState.direction;
     }}
 
-    function applyColumnVisibility() {{
-      const showTokenColumns = columnToggles.token.checked;
-      const showScoreColumns = columnToggles.score.checked;
-      const showTemperatureColumns = columnToggles.temperature.checked;
-      const showVersionColumn = columnToggles.version.checked;
-      const showContextLimitColumn = columnToggles.contextlimit.checked;
-
-      table.querySelectorAll('[data-column-group="token"]').forEach((cell) => {{
-        cell.hidden = !showTokenColumns;
-      }});
-      table.querySelectorAll('[data-column-group="score"]').forEach((cell) => {{
-        cell.hidden = !showScoreColumns;
-      }});
-      table.querySelectorAll('[data-column-group="temperature"]').forEach((cell) => {{
-        cell.hidden = !showTemperatureColumns;
-      }});
-      table.querySelectorAll('[data-column-group="version"]').forEach((cell) => {{
-        cell.hidden = !showVersionColumn;
-      }});
-      table.querySelectorAll('[data-column-group="contextlimit"]').forEach((cell) => {{
-        cell.hidden = !showContextLimitColumn;
-      }});
-
-      secondaryHeaderRow.hidden = !showTokenColumns && !showScoreColumns && !showTemperatureColumns;
-    
-      tokenGroupHeading.textContent = showTokenColumns ? "Tokens" : "Total tokens";
-      tokenGroupHeading.colSpan = showTokenColumns ? 3 : 1;
-      tokenGroupHeading.rowSpan = showTokenColumns ? 1 : 2;
-      tokenGroupHeading.dataset.expanded = showTokenColumns ? "true" : "false";
-      totalTokenHeading.hidden = !showTokenColumns;
-    
-      scoreGroupHeading.textContent = showScoreColumns ? "Score" : "Score final";
-      scoreGroupHeading.colSpan = showScoreColumns ? 4 : 1;
-      scoreGroupHeading.rowSpan = showScoreColumns ? 1 : 2;
-      scoreGroupHeading.dataset.expanded = showScoreColumns ? "true" : "false";
-      finalScoreHeading.hidden = !showScoreColumns;
-    
-      const temperatureColumnCount = table.querySelectorAll('thead [data-column-group="temperature"]').length;
-      temperatureGroupHeading.textContent = showTemperatureColumns ? "Temperature" : "Best temp";
-      temperatureGroupHeading.colSpan = showTemperatureColumns ? temperatureColumnCount + 1 : 1;
-      temperatureGroupHeading.rowSpan = showTemperatureColumns ? 1 : 2;
-      temperatureGroupHeading.dataset.expanded = showTemperatureColumns ? "true" : "false";
-      selectedTemperatureHeading.hidden = !showTemperatureColumns;
-      applyExtremes();
-      saveBrowserState();
+    function sortHeaderForKey(key) {{
+      return Array.from(table.querySelectorAll("th[data-key]"))
+        .find((header) => header.dataset.key === key) || null;
     }}
 
+    // Event listeners
     for (const input of Object.values(filters)) {{
       input.addEventListener("input", applyFilters);
       input.addEventListener("change", applyFilters);
@@ -1912,23 +1267,14 @@ def render_html(
       syncScoreRange("max");
     }});
 
-    for (const toggle of Object.values(columnToggles)) {{
-      toggle.addEventListener("change", applyColumnVisibility);
-    }}
-
     tbody.addEventListener("click", (event) => {{
       const button = event.target.closest("[data-model-filter]");
-      if (button === null) {{
-        return;
-      }}
+      if (button === null) return;
       toggleModelSearch(button.dataset.modelFilter || "");
     }});
 
     table.querySelectorAll("th[data-key]").forEach((header) => {{
       header.addEventListener("click", () => {{
-        if (header.classList.contains("group-heading") && header.rowSpan !== 2) {{
-          return;
-        }}
         const key = header.dataset.key;
         const type = header.dataset.type || "text";
         const direction = sortState.key === key && sortState.direction === "asc" ? "desc" : "asc";
@@ -1938,117 +1284,24 @@ def render_html(
       }});
     }});
 
-    reset.addEventListener("click", () => {{
+    resetBtn.addEventListener("click", () => {{
       filters.search.value = "";
-      filters.generator.value = "";
       filters.company.value = "";
       filters.quantization.value = "";
       filters.kvCacheQuant.value = "";
       setScoreRange(0, 100);
-      saveBrowserState();
       applyFilters();
     }});
 
+    // Init: sort by avgScore desc (default)
     setScoreRange(0, 100);
-    restoreBrowserState();
-    applyColumnVisibility();
     applySort();
-    updateSortIndicators(sortHeaderForKey(sortState.key) || sortHeaderForKey("rank"));
+    updateSortIndicators(sortHeaderForKey("avgScore"));
     applyFilters();
   </script>
 </body>
 </html>
 """
-
-
-def render_html_row(
-    rank: int,
-    result: BenchmarkResult,
-    quantization_colors: dict[str, dict[str, str]],
-    temperature_columns: list[tuple[str, str]],
-) -> str:
-    easy_score = result.difficulty_scores["easy"]
-    medium_score = result.difficulty_scores["medium"]
-    hard_score = result.difficulty_scores["hard"]
-    quantization_label = result.quantization or "n/a"
-    quantization_cell = render_quantization_cell(
-        quantization_label,
-        quantization_colors,
-    )
-    series_color = quantization_colors[quantization_label]["bg"]
-    temperature_data_attrs = render_temperature_data_attrs(
-        result,
-        temperature_columns,
-    )
-    temperature_cells = render_temperature_score_cells(result, temperature_columns)
-    search_text = " ".join(
-        [
-            str(rank),
-            result.generator,
-            result.model,
-            result.company,
-            result.quantization,
-            result.kv_cache_quantization or "",
-            result.highest_token_task_id or "",
-            format_duration(result.total_seconds),
-            format_int(result.total_tokens),
-            format_int(result.highest_token_task_total_tokens),
-            format_number(result.tokens_per_second),
-            format_score(easy_score),
-            format_score(medium_score),
-            format_score(hard_score),
-            format_score(result.final_score),
-            format_temperature(result.selected_temperature),
-            *(
-                format_score(result.temperature_scores.get(label))
-                for label, _key in temperature_columns
-            ),
-        ]
-    )
-    return (
-        "          <tr "
-        f'data-rank="{rank}" '
-        f'data-generator="{escape_attr(result.generator)}" '
-        f'data-version="{escape_attr(result.version or "")}" '
-        f'data-context-limit="{result.context_limit}" '
-        f'data-model="{escape_attr(result.model)}" '
-        f'data-company="{escape_attr(result.company)}" '
-        f'data-quantization="{escape_attr(result.quantization)}" '
-        f'data-kv-cache-quant="{escape_attr(result.kv_cache_quantization or "")}" '
-        f'data-total-seconds="{number_attr(result.total_seconds)}" '
-        f'data-total-tokens="{number_attr(result.total_tokens)}" '
-        f'data-highest-token-task-total-tokens="{number_attr(result.highest_token_task_total_tokens)}" '
-        f'data-highest-token-task-id="{escape_attr(result.highest_token_task_id or "")}" '
-        f'data-tokens-per-second="{number_attr(result.tokens_per_second)}" '
-        f'data-easy-score="{number_attr(easy_score)}" '
-        f'data-medium-score="{number_attr(medium_score)}" '
-        f'data-hard-score="{number_attr(hard_score)}" '
-        f'data-final-score="{number_attr(result.final_score)}" '
-        f'data-selected-temperature="{number_attr(result.selected_temperature)}" '
-        f"{temperature_data_attrs}"
-        f'data-series-color="{escape_attr(series_color)}" '
-        f'data-search="{escape_attr(search_text)}">'
-        f'<td class="numeric">{rank}</td>'
-        f"<td>{escape_html(result.generator)}</td>"
-        f'<td data-column-group="version" hidden>{escape_html(result.version or "n/a")}</td>'
-        f'<td class="numeric" data-column-group="contextlimit" hidden>{escape_html(format_int(result.context_limit))}</td>'
-        f'<td class="model"><button class="model-button" type="button" data-model-filter="{escape_attr(result.model)}">{escape_html(result.model)}</button></td>'
-        f'<td>{escape_html(result.company or "n/a")}</td>'
-        f"<td>{quantization_cell}</td>"
-        f'<td>{escape_html(result.kv_cache_quantization or "n/a")}</td>'
-        f'<td class="numeric" data-extreme-key="totalSeconds">{escape_html(format_duration(result.total_seconds))}</td>'
-        f'<td class="numeric" data-extreme-key="totalTokens">{escape_html(format_int(result.total_tokens))}</td>'
-        f'<td class="numeric" data-extreme-key="highestTokenTaskTotalTokens" data-column-group="token" hidden>{escape_html(format_int(result.highest_token_task_total_tokens))}</td>'
-        f'<td data-column-group="token" hidden>{escape_html(result.highest_token_task_id or "n/a")}</td>'
-        f'<td class="numeric" data-extreme-key="tokensPerSecond">{escape_html(format_number(result.tokens_per_second))}</td>'
-        f'<td class="numeric" data-column-group="score" hidden>{escape_html(format_score(easy_score))}</td>'
-        f'<td class="numeric" data-column-group="score" hidden>{escape_html(format_score(medium_score))}</td>'
-        f'<td class="numeric" data-column-group="score" hidden>{escape_html(format_score(hard_score))}</td>'
-        f'<td class="numeric" data-extreme-key="finalScore">{escape_html(format_score(result.final_score))}</td>'
-        f'<td class="numeric">{escape_html(format_temperature(result.selected_temperature))}</td>'
-        f"{temperature_cells}"
-        "</tr>"
-    )
 
 
 def render_temperature_header_cells(
@@ -2078,6 +1331,7 @@ def render_temperature_score_cells(
         f'<td class="numeric" data-column-group="temperature" hidden>{escape_html(format_score(result.temperature_scores.get(label)))}</td>'
         for label, _key in temperature_columns
     )
+
 
 
 def load_json(path: Path) -> dict[str, Any]:
