@@ -1227,6 +1227,7 @@ def render_html(
       visibleCount.textContent = `Showing ${{visible}} of ${{rows.length}} groups`;
       emptyEl.style.display = visible === 0 ? "block" : "none";
       applyExtremes();
+      saveState();
     }}
 
     function applySort() {{
@@ -1253,6 +1254,42 @@ def render_html(
     function sortHeaderForKey(key) {{
       return Array.from(table.querySelectorAll("th[data-key]"))
         .find((header) => header.dataset.key === key) || null;
+    }}
+
+    function saveState() {{
+      const state = {{
+        search: filters.search.value,
+        publisher: filters.publisher.value,
+        quantization: filters.quantization.value,
+        kvCacheQuant: filters.kvCacheQuant.value,
+        minScore: Number(scoreRange.minInput.value),
+        maxScore: Number(scoreRange.maxInput.value),
+        sort: sortState,
+      }};
+      localStorage.setItem(storageKey, JSON.stringify(state));
+    }}
+
+    function restoreState() {{
+      let state = null;
+      try {{
+        state = JSON.parse(localStorage.getItem(storageKey) || "null");
+      }} catch {{
+        state = null;
+      }}
+      if (!state || typeof state !== "object") return;
+      if (typeof state.search === "string") filters.search.value = state.search;
+      for (const key of ["publisher", "quantization", "kvCacheQuant"]) {{
+        if (typeof state[key] === "string") filters[key].value = state[key];
+      }}
+      const minScore = clampScore(state.minScore, 0);
+      const maxScore = clampScore(state.maxScore, 100);
+      setScoreRange(Math.min(minScore, maxScore), Math.max(minScore, maxScore));
+      if (state.sort && (state.sort.direction === "asc" || state.sort.direction === "desc")) {{
+        const header = sortHeaderForKey(state.sort.key);
+        if (header) {{
+          sortState = {{ key: header.dataset.key, type: header.dataset.type || "text", direction: state.sort.direction }};
+        }}
+      }}
     }}
 
     // Event listeners
@@ -1286,6 +1323,7 @@ def render_html(
         sortState = {{ key, type, direction }};
         applySort();
         updateSortIndicators(header);
+        saveState();
       }});
     }});
 
@@ -1298,10 +1336,11 @@ def render_html(
       applyFilters();
     }});
 
-    // Init: sort by avgScore desc (default)
+    // Init: restore persisted filters/sort, falling back to defaults
     setScoreRange(0, 100);
+    restoreState();
     applySort();
-    updateSortIndicators(sortHeaderForKey("avgScore"));
+    updateSortIndicators(sortHeaderForKey(sortState.key));
     applyFilters();
   </script>
 </body>
