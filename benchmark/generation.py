@@ -1133,8 +1133,8 @@ class PiGenerator:
         run: CommandResult,
     ) -> None:
         task_dir = prepared.task_dir
-        (task_dir / "response.md").write_text(run.stdout, encoding="utf-8")
-        (task_dir / "pi-events.jsonl").write_text(run.stdout, encoding="utf-8")
+        # (task_dir / "response.md").write_text(run.stdout, encoding="utf-8")
+        # (task_dir / "pi-events.jsonl").write_text(run.stdout, encoding="utf-8")
         if run.stderr:
             (task_dir / "pi-stderr.log").write_text(run.stderr, encoding="utf-8")
 
