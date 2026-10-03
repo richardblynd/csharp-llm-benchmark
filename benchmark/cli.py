@@ -530,6 +530,8 @@ def _execute_benchmark(
         winning_temp = _select_best_temperature_run(discovery_runs).temperature
         full_config = with_llm_temperature(config, winning_temp)
         full_config = with_llm_temperatures(config, (winning_temp,))
+        # Persist the selected temperature so a later --resume can collapse to it.
+        _persist_selected_temperature(run_dir, winning_temp)
 
         # Reuse discovery scores so we don't re-generate / re-evaluate those tasks
         reuse_scores = _build_discovery_reuse_map(
@@ -546,6 +548,35 @@ def _execute_benchmark(
     else:
         full_config = config
         phase_label = None
+        if args.resume is not None and config.llm.discovery.enabled:
+            selected_temp = _read_selected_temperature(run_dir)
+            if selected_temp is None:
+                inferred_temp = _infer_selected_temperature(
+                    run_dir,
+                    get_effective_discovery_temperatures(config),
+                    tasks,
+                )
+                if inferred_temp is not None:
+                    # Backfill the marker so subsequent resumes read it directly.
+                    _persist_selected_temperature(run_dir, inferred_temp)
+                    selected_temp = inferred_temp
+            if (
+                selected_temp is not None
+                and not any(
+                    _same_temperature(selected_temp, temperature)
+                    for temperature in config.llm.temperatures
+                )
+            ):
+                raise ValueError(
+                    "Resumed run's selected temperature "
+                    f"{_format_temperature(selected_temp)} is no longer one of the configured llm.temperatures; resume the original run."
+                )
+            if selected_temp is not None:
+                full_config = with_llm_temperatures(config, (selected_temp,))
+                phase_label = (
+                    "Phase: Full Benchmark — temperature "
+                    f"{_format_temperature(selected_temp)} (resumed discovery)"
+                )
 
     temperature_runs = _run_task_major_temperatures(
         full_config,
@@ -756,6 +787,8 @@ def _run(args: argparse.Namespace) -> int:
         winning_temp = _select_best_temperature_run(discovery_runs).temperature
         full_config = with_llm_temperature(config, winning_temp)
         full_config = with_llm_temperatures(config, (winning_temp,))
+        # Persist the selected temperature so a later --resume can collapse to it.
+        _persist_selected_temperature(run_dir, winning_temp)
 
         # Reuse discovery scores so we don't re-generate / re-evaluate those tasks
         reuse_scores = _build_discovery_reuse_map(
@@ -772,6 +805,35 @@ def _run(args: argparse.Namespace) -> int:
     else:
         full_config = config
         phase_label = None
+        if args.resume is not None and config.llm.discovery.enabled:
+            selected_temp = _read_selected_temperature(run_dir)
+            if selected_temp is None:
+                inferred_temp = _infer_selected_temperature(
+                    run_dir,
+                    get_effective_discovery_temperatures(config),
+                    tasks,
+                )
+                if inferred_temp is not None:
+                    # Backfill the marker so subsequent resumes read it directly.
+                    _persist_selected_temperature(run_dir, inferred_temp)
+                    selected_temp = inferred_temp
+            if (
+                selected_temp is not None
+                and not any(
+                    _same_temperature(selected_temp, temperature)
+                    for temperature in config.llm.temperatures
+                )
+            ):
+                raise ValueError(
+                    "Resumed run's selected temperature "
+                    f"{_format_temperature(selected_temp)} is no longer one of the configured llm.temperatures; resume the original run."
+                )
+            if selected_temp is not None:
+                full_config = with_llm_temperatures(config, (selected_temp,))
+                phase_label = (
+                    "Phase: Full Benchmark — temperature "
+                    f"{_format_temperature(selected_temp)} (resumed discovery)"
+                )
 
     temperature_runs = _run_task_major_temperatures(
         full_config,
@@ -1601,6 +1663,75 @@ def _temperature_task_root(
     if not multi_temperature:
         return run_dir
     return run_dir / "temperatures" / f"temperature-{_format_temperature(temperature)}"
+
+
+def _persist_selected_temperature(run_dir: Path, temperature: float) -> None:
+    payload = json.dumps(
+        {"temperature": float(temperature), "source": "discovery"}, indent=2
+    ) + "\n"
+    temp_path = run_dir / ".selected_temperature.tmp"
+    temp_path.write_text(payload, encoding="utf-8")
+    temp_path.replace(run_dir / "selected_temperature.json")
+
+
+def _read_selected_temperature(run_dir: Path) -> float | None:
+    path = run_dir / "selected_temperature.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    value = data.get("temperature") if isinstance(data, dict) else None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
+def _infer_selected_temperature(
+    run_dir: Path,
+    discovery_temperatures: tuple[float, ...],
+    tasks: list[Task],
+) -> float | None:
+    """Re-derive the winning discovery temperature from on-disk artifacts.
+
+    Backfills runs created before selected_temperature.json existed by re-scoring each
+    discovered temperature's result.json files under
+    <run_dir>/discovery/temperatures/temperature-X/tasks/<id>/. Returns None when no
+    usable artifacts are present.
+    """
+    try:
+        discovery_tasks = select_discovery_tasks(tasks)
+    except RuntimeError:
+        return None
+
+    temperature_runs: list[TemperatureRun] = []
+    for temperature in discovery_temperatures:
+        temp_root = (
+            run_dir
+            / "discovery"
+            / "temperatures"
+            / f"temperature-{_format_temperature(temperature)}"
+            / "tasks"
+        )
+        scores: list[TaskScore] = []
+        for task in discovery_tasks:
+            result_path = temp_root / task.id / "result.json"
+            if not result_path.exists():
+                continue
+            try:
+                result = _read_task_result_json(result_path)
+            except (OSError, ValueError):
+                continue
+            scores.append(score_task(task, result))
+        if scores:
+            temperature_runs.append(
+                TemperatureRun(temperature, score_benchmark(scores), scores)
+            )
+
+    if not temperature_runs:
+        return None
+    return _select_best_temperature_run(temperature_runs).temperature
 
 
 def _select_best_temperature_run(
