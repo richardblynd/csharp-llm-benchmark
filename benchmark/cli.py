@@ -354,6 +354,14 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--context-limit",
+        type=int,
+        help=(
+            "Model context window size in tokens, used for reporting. "
+            "Overrides llm.context_limit from config."
+        ),
+    )
+    run.add_argument(
         "--generator",
         choices=("llm", "opencode", "pi", "all"),
         help="Solution generator to use. Defaults to benchmark.generator.",
@@ -625,6 +633,7 @@ def _run(args: argparse.Namespace) -> int:
         min_p=args.min_p,
         top_k=args.top_k,
         repetition_penalty=args.repetition_penalty,
+        context_limit=args.context_limit,
         discovery_enabled=discovery_enabled_override,
     )
     if args.resume is None and args.resume_dir is not None:

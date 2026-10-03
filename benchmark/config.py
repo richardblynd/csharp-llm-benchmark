@@ -35,6 +35,7 @@ class LlmConfig:
     seed: int = 42
     timeout_seconds: int = 120
     requests_per_minute: int | None = None
+    context_limit: int | None = None
     discovery: DiscoveryConfig = field(default_factory=DiscoveryConfig)
 
     @property
@@ -184,6 +185,10 @@ def load_config(path: Path | None) -> AppConfig:
             requests_per_minute=_optional_positive_int(
                 llm_data.get("requests_per_minute"),
                 "llm.requests_per_minute",
+            ),
+            context_limit=_optional_positive_int(
+                llm_data.get("context_limit"),
+                "llm.context_limit",
             ),
             discovery=DiscoveryConfig(
                 enabled=_bool_value(
@@ -409,6 +414,7 @@ def apply_cli_overrides(
     min_p: float | None = None,
     top_k: int | None = None,
     repetition_penalty: float | None = None,
+    context_limit: int | None = None,
     discovery_enabled: bool | None = None,
 ) -> AppConfig:
     updated = AppConfig(
@@ -453,6 +459,11 @@ def apply_cli_overrides(
             seed=config.llm.seed,
             timeout_seconds=config.llm.timeout_seconds,
             requests_per_minute=config.llm.requests_per_minute,
+            context_limit=(
+                _positive_int(context_limit, "llm.context_limit")
+                if context_limit is not None
+                else config.llm.context_limit
+            ),
             discovery=DiscoveryConfig(
                 enabled=(
                     bool(discovery_enabled)

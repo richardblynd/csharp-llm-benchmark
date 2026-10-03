@@ -87,6 +87,7 @@ def write_summary(
             "seed": config.llm.seed,
             "timeout_seconds": config.llm.timeout_seconds,
             "requests_per_minute": config.llm.requests_per_minute,
+            "context_limit": config.llm.context_limit,
         },
         "opencode": (
             {

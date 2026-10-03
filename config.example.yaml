@@ -32,6 +32,9 @@ llm:
   timeout_seconds: 1800
   # Optional API request throttle. Use null or omit to disable.
   # requests_per_minute: 3
+  # Optional: model context window size in tokens, used for reporting.
+  # Omit (or set null) to fall back to the default (50000).
+  # context_limit: 131072
 
 benchmark:
   # Solution generator: "llm" calls the OpenAI-compatible API directly;

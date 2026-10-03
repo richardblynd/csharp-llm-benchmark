@@ -235,6 +235,8 @@ def parse_summary(
         context_limit_raw = opencode_payload.get("context_limit")
     elif isinstance(pi_payload, dict):
         context_limit_raw = pi_payload.get("context_limit")
+    if context_limit_raw is None:
+        context_limit_raw = llm_payload.get("context_limit")
     context_limit = int(context_limit_raw) if context_limit_raw is not None else 50000
     publisher = str(payload.get("publisher") or llm_payload.get("publisher") or "")
     quantization = str(
