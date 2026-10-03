@@ -317,6 +317,17 @@ llm:
   quantization: "Q4_K_M"
 ```
 
+When running against a local LM Studio server, the benchmark queries its
+`GET /api/v1/models` endpoint once at startup and records the model size
+(shown in the aggregate **Model Size** column) and parameter count. The API's
+quantization also overrides `llm.quantization`. The yaml value is only used as
+a fallback for cloud providers or when the server/model cannot be matched:
+
+```bash
+# Backfill model_size_bytes/params_string into older runs (dry-run first):
+python scripts/backfill_model_size.py --results-dir results --dry-run
+```
+
 Configure benchmark temperatures in `config.yaml` under `llm.temperatures`.
 Omit the field to use the default `0.2`, `0.4`, `0.6`, `0.8` sweep. The legacy
 single-value `llm.temperature` field is still accepted for one-temperature

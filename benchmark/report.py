@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmark.config import AppConfig
+from benchmark.lmstudio_meta import format_model_size
 from benchmark.scorer import BenchmarkScore, TaskScore
 
 
@@ -43,6 +44,8 @@ def write_summary(
     task_scores: list[TaskScore],
     temperature_scores: list[Any] | None = None,
     discovery_runs: list[Any] | None = None,
+    model_size_bytes: int | None = None,
+    params_string: str | None = None,
 ) -> None:
     generated_at = datetime.now(timezone.utc).isoformat()
     total_llm_time = sum(
@@ -71,6 +74,8 @@ def write_summary(
         "publisher": config.llm.publisher,
         "quantization": config.llm.quantization,
         "kv_cache_quantization": config.llm.kv_cache_quantization,
+        "model_size_bytes": model_size_bytes,
+        "params_string": params_string,
         "llm": {
             "base_url": config.llm.base_url,
             "model": config.llm.model,
@@ -78,6 +83,8 @@ def write_summary(
             "publisher": config.llm.publisher,
             "quantization": config.llm.quantization,
             "kv_cache_quantization": config.llm.kv_cache_quantization,
+            "model_size_bytes": model_size_bytes,
+            "params_string": params_string,
             "temperature": config.llm.temperature,
             "temperatures": list(config.llm.temperatures),
             "top_p": config.llm.top_p,
@@ -290,6 +297,8 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         f"- Publisher: `{payload['publisher'] or 'n/a'}`",
         f"- Quantization: `{payload['quantization']}`",
         f"- KV cache quantization: `{payload.get('kv_cache_quantization') or 'n/a'}`",
+        f"- Model size: `{format_model_size(payload.get('model_size_bytes'))}`",
+        f"- Parameters: `{payload.get('params_string') or 'n/a'}`",
         f"- Selected temperature: `{_format_temperature(payload['selected_temperature'])}`",
         f"- Configured temperatures: `{_format_temperature_list(payload['llm'].get('temperatures', []))}`",
         f"- Top P: `{_format_optional_number(payload['llm'].get('top_p'))}`",

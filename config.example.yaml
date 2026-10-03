@@ -4,6 +4,10 @@ llm:
   model: "local-model-name"
   modelLabel: "local-model-label"
   publisher: "local-publisher"
+  # Opcional. Contra um server local do LM Studio, tamanho e quantização são
+  # autodetectados via GET /api/v1/models e sobrepõem este valor (um aviso é
+  # emitido se divergir). Mantenha preenchido apenas para providers cloud ou
+  # overrides explícitos.
   quantization: "not-specified"
   # Quantização do KV cache. Omitir ou usar null se não se aplica (ex: GPT cloud).
   # kv_cache_quantization: "Q4"

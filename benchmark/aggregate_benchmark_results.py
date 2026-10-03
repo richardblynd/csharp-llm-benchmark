@@ -4,6 +4,7 @@ import argparse
 import html
 import json
 import logging
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -33,6 +34,7 @@ class BenchmarkResult:
     publisher: str
     quantization: str
     kv_cache_quantization: str | None
+    model_size_bytes: int | None
     total_seconds: float | None
     total_tokens: int | None
     highest_token_task_id: str | None
@@ -57,6 +59,7 @@ class GroupedResult:
     publisher: str
     quantization: str
     kv_cache_quantization: str | None
+    model_size_bytes: int | None
     context_limit: int
     score_llm: float | None
     score_pi: float | None
@@ -69,6 +72,18 @@ class GroupedResult:
     def max_score(self) -> float | None:
         scores = [s for s in (self.score_llm, self.score_pi, self.score_opencode) if s is not None]
         return max(scores) if scores else None
+
+    def score_per_gb(self) -> float | None:
+        """Avg score per GiB of model file — efficiency vs. size.
+
+        None when the group has no average score or unknown model size
+        (older runs / cloud), which renders as 'n/a'.
+        """
+        avg = self.avg_score()
+        if avg is None or not self.model_size_bytes:
+            return None
+        size_gib = self.model_size_bytes / 2**30
+        return round(avg / size_gib, 2)
 
 
 def group_results(results: list[BenchmarkResult]) -> list[GroupedResult]:
@@ -89,11 +104,19 @@ def group_results(results: list[BenchmarkResult]) -> list[GroupedResult]:
             if r.final_score is not None and gen_label not in score_map:
                 score_map[gen_label] = r.final_score
 
+        # Not part of the grouping key on purpose: older runs lack the size,
+        # and mixing them with newer runs must not split the group.
+        model_size_bytes = next(
+            (r.model_size_bytes for _, r in items if r.model_size_bytes is not None),
+            None,
+        )
+
         grouped.append(GroupedResult(
             model=model,
             publisher=publisher,
             quantization=quantization,
             kv_cache_quantization=None if not kv_cache_key else kv_cache_key,
+            model_size_bytes=model_size_bytes,
             context_limit=context_limit,
             score_llm=score_map.get("LLM"),
             score_pi=score_map.get("Pi"),
@@ -255,6 +278,11 @@ def parse_summary(
     else:
         kv_cache_quantization = None
 
+    size_raw = payload.get("model_size_bytes")
+    if size_raw is None:
+        size_raw = llm_payload.get("model_size_bytes")
+    model_size_bytes = optional_int(size_raw)
+
     total_seconds = sum_optional_numbers(
         task.get("llm_response_time_seconds") for task in tasks
     )
@@ -315,6 +343,7 @@ def parse_summary(
         publisher=publisher,
         quantization=quantization,
         kv_cache_quantization=kv_cache_quantization,
+        model_size_bytes=model_size_bytes,
         total_seconds=total_seconds,
         total_tokens=total_tokens,
         highest_token_task_id=highest_token_task_id,
@@ -480,8 +509,8 @@ def render_markdown(
         f"- Results directory: `{results_dir}`",
         f"- Configuration groups: `{len(grouped_results)}`",
         "",
-        "| Rank | Model | Publisher | Quantization | KV Cache | Context Size | SCORE LLM | SCORE PI | SCORE OPENCODE | Avg Score | Max Score |",
-        "| ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Rank | Model | Publisher | Quantization | KV Cache | Model Size | Context Size | SCORE LLM | SCORE PI | SCORE OPENCODE | Avg Score | Max Score |",
+        "| ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
 
     for rank, g in enumerate(grouped_results, start=1):
@@ -491,6 +520,7 @@ def render_markdown(
             f"| {markdown_code(g.publisher or 'n/a')} "
             f"| {markdown_code(g.quantization or 'n/a')} "
             f"| {markdown_code(g.kv_cache_quantization or 'n/a')} "
+            f"| `{format_model_size(g.model_size_bytes)}` "
             f"| `{g.context_limit}` "
             f"| {_format_grouped_score(g.score_llm)} "
             f"| {_format_grouped_score(g.score_pi)} "
@@ -505,14 +535,18 @@ def render_markdown(
 def render_html_row_grouped(rank: int, g: GroupedResult) -> str:
     avg = g.avg_score()
     mx = g.max_score()
+    model_size_text = format_model_size(g.model_size_bytes)
+    score_per_gb_value = g.score_per_gb()
+    score_per_gb_text = "n/a" if score_per_gb_value is None else f"{score_per_gb_value:.2f}"
     search_text = " ".join([
         str(rank), g.model, g.publisher or "", g.quantization or "",
-        g.kv_cache_quantization or "", str(g.context_limit),
+        g.kv_cache_quantization or "", model_size_text, str(g.context_limit),
         _format_grouped_score(g.score_llm),
         _format_grouped_score(g.score_pi),
         _format_grouped_score(g.score_opencode),
         _format_grouped_score(avg),
         _format_grouped_score(mx),
+        score_per_gb_text,
     ])
     return (
         f'      <tr '
@@ -521,11 +555,13 @@ def render_html_row_grouped(rank: int, g: GroupedResult) -> str:
         f'data-publisher="{escape_attr(g.publisher or "")}" '
         f'data-quantization="{escape_attr(g.quantization or "")}" '
         f'data-kv-cache-quant="{escape_attr(g.kv_cache_quantization or "")}" '
+        f'data-model-size="{number_attr(g.model_size_bytes)}" '
         f'data-context-limit="{g.context_limit}" '
         f'data-score-llm="{number_attr(g.score_llm)}" '
         f'data-score-pi="{number_attr(g.score_pi)}" '
         f'data-score-opencode="{number_attr(g.score_opencode)}" '
         f'data-avg-score="{number_attr(avg)}" '
+        f'data-score-per-gb="{number_attr(score_per_gb_value)}" '
         f'data-max-score="{number_attr(mx)}" '
         f'data-search="{escape_attr(search_text)}">'
         f'<td class="numeric">{rank}</td>'
@@ -533,13 +569,138 @@ def render_html_row_grouped(rank: int, g: GroupedResult) -> str:
         f'<td>{escape_html(g.publisher or "n/a")}</td>'
         f'<td>{escape_html(g.quantization or "n/a")}</td>'
         f'<td>{escape_html(g.kv_cache_quantization or "n/a")}</td>'
+        f'<td class="numeric">{escape_html(model_size_text)}</td>'
         f'<td class="numeric">{g.context_limit}</td>'
         f'<td class="numeric" data-extreme-key="scoreLlm">{_format_grouped_score(g.score_llm)}</td>'
         f'<td class="numeric" data-extreme-key="scorePi">{_format_grouped_score(g.score_pi)}</td>'
         f'<td class="numeric" data-extreme-key="scoreOpencode">{_format_grouped_score(g.score_opencode)}</td>'
         f'<td class="numeric" data-extreme-key="avgScore">{_format_grouped_score(avg)}</td>'
+        f'<td class="numeric" data-extreme-key="scorePerGb">{escape_html(score_per_gb_text)}</td>'
         f'<td class="numeric" data-extreme-key="maxScore">{_format_grouped_score(mx)}</td>'
         '</tr>'
+    )
+
+
+def _nice_axis_step(value: float, target_count: int) -> float:
+    raw = max(value, 1e-9) / max(target_count, 1)
+    for step in (0.5, 1.0, 2.0, 5.0, 10.0):
+        if step >= raw:
+            return step
+    return 20.0
+
+
+def _axis_ticks(step: float, top: float) -> list[float]:
+    ticks: list[float] = []
+    value = 0.0
+    while value <= top + 1e-9:
+        ticks.append(round(value, 6))
+        value += step
+    return ticks
+
+
+def render_scatter_panel(grouped_results: list[GroupedResult]) -> str:
+    """Render the avg-score vs model-size scatter panel (inline SVG).
+
+    Returns "" when fewer than two groups have both a known average score and
+    a model size — there is nothing meaningful to plot in that case. Points
+    carry data-gid equal to their table row rank so the page JS can hide them
+    together with filtered rows, plus tooltip payloads.
+    """
+    points: list[tuple[int, GroupedResult, float, float]] = []
+    for rank, group in enumerate(grouped_results, start=1):
+        if not group.model_size_bytes:
+            continue
+        avg = group.avg_score()
+        if avg is None:
+            continue
+        points.append((rank, group, group.model_size_bytes / 2**30, avg))
+    if len(points) < 2:
+        return ""
+
+    width, height = 900, 320
+    margin_left, margin_right, margin_top, margin_bottom = 56, 24, 18, 44
+    plot_w = width - margin_left - margin_right
+    plot_h = height - margin_top - margin_bottom
+
+    # Fixed 0-100 score scale: scores are out of 100, so the axis must not
+    # auto-fit (it would exaggerate small differences between groups).
+    max_size = max(item[2] for item in points)
+    x_step = _nice_axis_step(max_size, 6)
+    x_top = x_step * math.ceil(max_size / x_step - 1e-9) or x_step
+    y_step = 10.0
+    y_top = 100.0
+
+    def px(size_gib: float) -> float:
+        return margin_left + size_gib / x_top * plot_w
+
+    def py(score: float) -> float:
+        return margin_top + (1 - score / y_top) * plot_h
+
+    parts: list[str] = []
+    for tick in _axis_ticks(x_step, x_top):
+        x = f"{px(tick):.1f}"
+        parts.append(
+            f'<line class="scatter-grid" x1="{x}" y1="{margin_top}" '
+            f'x2="{x}" y2="{margin_top + plot_h}"/>'
+        )
+    for tick in _axis_ticks(y_step, y_top):
+        y = f"{py(tick):.1f}"
+        parts.append(
+            f'<line class="scatter-grid" x1="{margin_left}" y1="{y}" '
+            f'x2="{margin_left + plot_w}" y2="{y}"/>'
+        )
+    for tick in _axis_ticks(x_step, x_top):
+        parts.append(
+            '<text class="scatter-tick" text-anchor="middle" '
+            f'x="{px(tick):.1f}" y="{margin_top + plot_h + 20}">{tick:g}</text>'
+        )
+    for tick in _axis_ticks(y_step, y_top):
+        parts.append(
+            '<text class="scatter-tick" text-anchor="end" dominant-baseline="middle" '
+            f'x="{margin_left - 10}" y="{py(tick):.1f}">{tick:g}</text>'
+        )
+    parts.append(
+        f'<text class="scatter-axis-label" x="{margin_left + plot_w / 2:.1f}" '
+        f'y="{height - 8}" text-anchor="middle">Model size (GB)</text>'
+    )
+    parts.append(
+        '<text class="scatter-axis-label" transform="'
+        f'translate(16 {margin_top + plot_h / 2}) rotate(-90)" '
+        "text-anchor=\"middle\">Avg Score</text>"
+    )
+    for rank, group, size_gib, avg in sorted(points, key=lambda item: item[2]):
+        sub_parts = [part for part in (group.quantization or None, group.publisher or None) if part]
+        stats = f"{format_model_size(group.model_size_bytes)} · Avg {avg:g}"
+        parts.append(
+            '<circle class="scatter-point" r="5.5" '
+            f'data-gid="{rank}" '
+            f'data-tip-title="{escape_attr(group.model)}" '
+            f'data-tip-sub="{escape_attr(" · ".join(sub_parts))}" '
+            f'data-tip-stats="{escape_attr(stats)}" '
+            f'cx="{px(size_gib):.1f}" cy="{py(avg):.1f}"/>'
+        )
+
+    svg = (
+        '<svg class="scatter-svg" viewBox="0 0 900 320" role="img" '
+        'aria-label="Average score versus model size scatter plot">'
+        + "".join(parts)
+        + "</svg>"
+    )
+    return (
+        '<section class="chart-panel" aria-label="Average score versus model size">'
+        "<h2>Avg Score vs Model Size</h2>"
+        '<p class="chart-caption">One point per configuration group; points follow '
+        "the current filters. Hover a point for details.</p>"
+        '<div class="scatter-wrap">'
+        + svg
+        + (
+            '<div id="scatter-tip" class="scatter-tip" aria-hidden="true">'
+            '<div class="scatter-tip-title"></div>'
+            '<div class="scatter-tip-sub"></div>'
+            '<div class="scatter-tip-stats"></div>'
+            "</div>"
+        )
+        + "</div></section>"
     )
 
 
@@ -558,6 +719,7 @@ def render_html(
         render_html_row_grouped(rank, g)
         for rank, g in enumerate(grouped_results, start=1)
     )
+    chart_panel = render_scatter_panel(grouped_results)
 
     return f"""<!doctype html>
 <html lang="en">
@@ -807,6 +969,106 @@ def render_html(
       pointer-events: auto;
     }}
 
+    .chart-panel {{
+      flex-shrink: 0;
+      margin-bottom: 12px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 14px 16px 10px;
+    }}
+
+    .chart-panel h2 {{
+      margin: 0 0 4px;
+      font-size: 17px;
+      font-weight: 700;
+    }}
+
+    .chart-caption {{
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }}
+
+    .scatter-wrap {{
+      position: relative;
+    }}
+
+    .scatter-svg {{
+      display: block;
+      width: 100%;
+      max-width: 1040px;
+      height: auto;
+      margin: 0 auto;
+    }}
+
+    .scatter-grid {{
+      stroke: var(--line);
+      stroke-width: 1;
+    }}
+
+    .scatter-axis-label {{
+      fill: var(--muted);
+      font-size: 12px;
+    }}
+
+    .scatter-tick {{
+      fill: var(--muted);
+      font-size: 11px;
+    }}
+
+    .scatter-point {{
+      fill: var(--accent);
+      fill-opacity: 0.75;
+      stroke: var(--accent-strong);
+      stroke-width: 1.5;
+      cursor: pointer;
+      transition: opacity 0.2s ease, fill-opacity 0.15s ease;
+    }}
+
+    .scatter-point:hover {{
+      fill-opacity: 1;
+      stroke-width: 2.5;
+    }}
+
+    .scatter-point.point-hidden {{
+      opacity: 0;
+      pointer-events: none;
+    }}
+
+    .scatter-tip {{
+      position: fixed;
+      z-index: 40;
+      display: none;
+      max-width: 320px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      box-shadow: var(--shadow);
+      padding: 8px 10px;
+      font-size: 13px;
+      pointer-events: none;
+    }}
+
+    .scatter-tip.visible {{
+      display: block;
+    }}
+
+    .scatter-tip-title {{
+      font-weight: 700;
+    }}
+
+    .scatter-tip-sub {{
+      color: var(--muted);
+      margin-top: 2px;
+    }}
+
+    .scatter-tip-stats {{
+      margin-top: 4px;
+      font-variant-numeric: tabular-nums;
+    }}
+
     .table-area {{
       flex: 1;
       display: flex;
@@ -1026,6 +1288,7 @@ def render_html(
       </aside>
 
       <div class="table-area">
+{chart_panel}
         <div class="summary">
           <span id="visible-count">Showing {len(grouped_results)} of {len(grouped_results)} groups</span>
           <button id="reset" type="button">Reset filters</button>
@@ -1039,11 +1302,13 @@ def render_html(
                 <th data-key="publisher" data-type="text">Publisher</th>
                 <th data-key="quantization" data-type="text">Quantization</th>
                 <th data-key="kvCacheQuant" data-type="text">KV Cache</th>
+                <th class="numeric" data-key="modelSize" data-type="number">Model Size</th>
                 <th class="numeric" data-key="contextLimit" data-type="number">Context Size</th>
                 <th class="numeric" data-key="scoreLlm" data-type="number">Score LLM</th>
                 <th class="numeric" data-key="scorePi" data-type="number">Score Pi</th>
                 <th class="numeric" data-key="scoreOpencode" data-type="number">Score OpenCode</th>
                 <th class="numeric" data-key="avgScore" data-type="number">Avg Score</th>
+                <th class="numeric" data-key="scorePerGb" data-type="number">Avg / GB</th>
                 <th class="numeric" data-key="maxScore" data-type="number">Max Score</th>
               </tr>
             </thead>
@@ -1194,6 +1459,7 @@ def render_html(
         {{ key: "scoreLlm", best: "max" }},
         {{ key: "scorePi", best: "max" }},
         {{ key: "scoreOpencode", best: "max" }},
+        {{ key: "scorePerGb", best: "max" }},
       ];
 
       for (const rule of extremeRules) {{
@@ -1228,6 +1494,7 @@ def render_html(
       }}
       visibleCount.textContent = `Showing ${{visible}} of ${{rows.length}} groups`;
       emptyEl.style.display = visible === 0 ? "block" : "none";
+      syncScatterVisibility();
       applyExtremes();
       saveState();
     }}
@@ -1337,6 +1604,58 @@ def render_html(
       setScoreRange(0, 100);
       applyFilters();
     }});
+
+    // Scatter plot (avg score vs model size): tooltip + filter-synced visibility
+    const scatterWrap = document.querySelector(".scatter-wrap");
+    let scatterPoints = [];
+    let scatterRowByRank = new Map();
+    if (scatterWrap) {{
+      scatterPoints = Array.from(scatterWrap.querySelectorAll("circle.scatter-point"));
+      scatterRowByRank = new Map(rows.map((row) => [row.dataset.rank, row]));
+      const scatterTip = document.querySelector("#scatter-tip");
+      const tipTitle = document.querySelector(".scatter-tip-title");
+      const tipSub = document.querySelector(".scatter-tip-sub");
+      const tipStats = document.querySelector(".scatter-tip-stats");
+      let activePoint = null;
+
+      function positionScatterTip(event) {{
+        const tipWidth = scatterTip.offsetWidth || 240;
+        const tipHeight = scatterTip.offsetHeight || 64;
+        const left = Math.min(event.clientX + 14, window.innerWidth - tipWidth - 8);
+        const top = Math.min(event.clientY + 12, window.innerHeight - tipHeight - 8);
+        scatterTip.style.left = `${{left}}px`;
+        scatterTip.style.top = `${{top}}px`;
+      }}
+
+      function hideScatterTip() {{
+        activePoint = null;
+        scatterTip.classList.remove("visible");
+      }}
+
+      scatterWrap.addEventListener("mousemove", (event) => {{
+        const point = event.target.closest(".scatter-point");
+        if (!point) {{
+          if (activePoint !== null) hideScatterTip();
+          return;
+        }}
+        if (point !== activePoint) {{
+          activePoint = point;
+          tipTitle.textContent = point.dataset.tipTitle || "";
+          tipSub.textContent = point.dataset.tipSub || "";
+          tipStats.textContent = point.dataset.tipStats || "";
+        }}
+        scatterTip.classList.add("visible");
+        positionScatterTip(event);
+      }});
+    }}
+
+    function syncScatterVisibility() {{
+      for (const point of scatterPoints) {{
+        const row = scatterRowByRank.get(point.dataset.gid);
+        if (!row) continue;
+        point.classList.toggle("point-hidden", row.hidden);
+      }}
+    }}
 
     // Init: restore persisted filters/sort, falling back to defaults
     setScoreRange(0, 100);
@@ -1463,6 +1782,13 @@ def format_duration(seconds: float | None) -> str:
     hours, remainder = divmod(rounded_seconds, 60 * 60)
     minutes, seconds = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def format_model_size(value: int | None) -> str:
+    """Render a model size in bytes as GB with one decimal (GiB-based)."""
+    if value is None:
+        return "n/a"
+    return f"{value / 2**30:.1f} GB"
 
 
 def format_int(value: int | None) -> str:

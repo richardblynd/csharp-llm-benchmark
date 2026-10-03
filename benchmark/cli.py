@@ -30,6 +30,7 @@ from benchmark.generation import (
     opencode_metadata_to_dict,
 )
 from benchmark.llm_client import LlmUsage
+from benchmark.lmstudio_meta import LmStudioModelMeta, resolve_model_meta
 from benchmark.report import (
     create_run_dir,
     find_highest_token_task,
@@ -452,7 +453,16 @@ def _execute_benchmark(
     config: AppConfig,
     tasks: list[Task],
     args: argparse.Namespace,
+    model_meta: LmStudioModelMeta | None = None,
 ) -> BenchmarkScore:
+    if model_meta is not None and model_meta.quantization:
+        # API value wins over the yaml one (see resolve_model_meta in _run);
+        # apply it before run-dir naming so folders match reality.
+        config = replace(
+            config,
+            llm=replace(config.llm, quantization=model_meta.quantization),
+        )
+
     resume_from_index = 0
     if args.resume is not None:
         resume_from_index = _find_task_index(tasks, args.resume)
@@ -597,6 +607,8 @@ def _execute_benchmark(
         task_scores=best_run.task_scores,
         temperature_scores=temperature_runs,
         discovery_runs=discovery_runs,
+        model_size_bytes=model_meta.size_bytes if model_meta else None,
+        params_string=model_meta.params_string if model_meta else None,
     )
 
     if is_discovery and discovery_runs:
@@ -636,6 +648,29 @@ def _execute_benchmark(
                 f"({temperature_run.score.earned_points:g}/{temperature_run.score.available_points:g})"
             )
     return best_run.score
+
+_QUANTIZATION_PLACEHOLDERS = {"", "unknown", "not-specified"}
+
+
+def _report_quantization_precedence(
+    configured: str, meta: LmStudioModelMeta
+) -> None:
+    """Warn when an explicit yaml quantization conflicts with LM Studio metadata.
+
+    The API value wins; yaml placeholders ('unknown', 'not-specified') are
+    treated as unset and never trigger a warning.
+    """
+    if meta.quantization is None:
+        return
+    if configured.strip().casefold() in _QUANTIZATION_PLACEHOLDERS:
+        return
+    if configured != meta.quantization:
+        print(
+            f"Warning: configured quantization ({configured}) differs from the "
+            f"LM Studio metadata ({meta.quantization}); using the API value.",
+            file=sys.stderr,
+        )
+
 
 def _run(args: argparse.Namespace) -> int:
     discovery_enabled_override = (
@@ -678,6 +713,14 @@ def _run(args: argparse.Namespace) -> int:
     if errors:
         raise RuntimeError("Task validation failed:\n" + "\n".join(errors))
 
+    model_meta = resolve_model_meta(
+        base_url=config.llm.base_url,
+        api_key=config.llm.api_key,
+        model=config.llm.model,
+        model_label=config.llm.effective_model_label,
+    )
+    _report_quantization_precedence(config.llm.quantization, model_meta)
+
     if config.benchmark.generator == "all":
         results = {}
         for mode in ["llm", "opencode", "pi"]:
@@ -688,7 +731,9 @@ def _run(args: argparse.Namespace) -> int:
                 # Since both are frozen dataclasses, we must use replace recursively
                 mode_benchmark_config = dc_replace(config.benchmark, generator=mode)
                 mode_config = dc_replace(config, benchmark=mode_benchmark_config)
-                score = _execute_benchmark(mode_config, tasks, args)
+                score = _execute_benchmark(
+                    mode_config, tasks, args, model_meta=model_meta
+                )
                 results[mode] = score
             except Exception as exc:
                 print(f"Error during {mode} run: {exc}", file=sys.stderr)
@@ -706,7 +751,7 @@ def _run(args: argparse.Namespace) -> int:
         print("="*40)
         return 0
 
-    _execute_benchmark(config, tasks, args)
+    _execute_benchmark(config, tasks, args, model_meta=model_meta)
     return 0
 
     resume_from_index = 0
@@ -854,6 +899,8 @@ def _run(args: argparse.Namespace) -> int:
         task_scores=best_run.task_scores,
         temperature_scores=temperature_runs,
         discovery_runs=discovery_runs,
+        model_size_bytes=model_meta.size_bytes if model_meta else None,
+        params_string=model_meta.params_string if model_meta else None,
     )
 
     if is_discovery and discovery_runs:
