@@ -764,13 +764,20 @@ class OpenCodeGenerator:
                 self._remove_container(prepared.container_name)
 
     def _remove_container(self, container_name: str) -> None:
-        subprocess.run(
-            ["docker", "rm", "-f", container_name],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        try:
+            subprocess.run(
+                ["docker", "rm", "-f", container_name],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (subprocess.TimeoutExpired, OSError) as cleanup_exc:
+            print(
+                f"  [benchmark] could not remove container {container_name}: "
+                f"{cleanup_exc}",
+                file=sys.stderr,
+            )
 
     def _opencode_install_dir(self) -> Path:
         package_key = _safe_cache_key(self._opencode.package)
@@ -952,13 +959,20 @@ def _run_docker_command(
     except subprocess.TimeoutExpired as exc:
         container_name = _extract_docker_container_name(docker_command)
         if container_name and not keep_on_timeout:
-            subprocess.run(
-                ["docker", "rm", "-f", container_name],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
+            try:
+                subprocess.run(
+                    ["docker", "rm", "-f", container_name],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except (subprocess.TimeoutExpired, OSError) as cleanup_exc:
+                print(
+                    f"  [benchmark] could not remove timed-out container "
+                    f"{container_name}: {cleanup_exc}",
+                    file=sys.stderr,
+                )
         return CommandResult(
             exit_code=124,
             stdout=_decode_output(exc.stdout),
@@ -1064,6 +1078,7 @@ class PiGenerator:
         prepared: PreparedPiGeneration,
     ) -> GeneratedSolution:
         """Execute the pi session (docker start or run) and interpret result."""
+        run: CommandResult | None = None
         try:
             session_started_at = time.perf_counter()
             run, session_time_seconds = self._execute_session(prepared)
@@ -1071,7 +1086,8 @@ class PiGenerator:
             return self._build_solution(prepared, run, session_time_seconds)
         finally:
             preserve_timeout_home = (
-                getattr(run, "timed_out", False)
+                run is not None
+                and run.timed_out
                 and self._pi.keep_timed_out_containers
             )
             self._cleanup_pi_home(prepared, preserve=preserve_timeout_home)
@@ -1431,13 +1447,20 @@ class PiGenerator:
             _safe_rmtree(home_dir, safe_parent=prepared.task_dir, ignore_errors=True)
 
     def _remove_container(self, container_name: str) -> None:
-        subprocess.run(
-            ["docker", "rm", "-f", container_name],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        try:
+            subprocess.run(
+                ["docker", "rm", "-f", container_name],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (subprocess.TimeoutExpired, OSError) as cleanup_exc:
+            print(
+                f"  [benchmark] could not remove container {container_name}: "
+                f"{cleanup_exc}",
+                file=sys.stderr,
+            )
 
     def _preflight_cache_key(self) -> tuple[str, ...]:
         return (

@@ -4,6 +4,7 @@ import argparse
 import json
 import shutil
 import sys
+import traceback
 import unicodedata
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -1258,6 +1259,7 @@ def _run_generation_queue(
                 try:
                     generated = gen_future.result()
                 except Exception as exc:
+                    traceback.print_exception(exc)
                     dashboard_rows[current_gen.row_index].llm = "error"
                     dashboard_rows[current_gen.row_index].evaluation = "cancelled"
                     _cancel_all_pending_work(
@@ -1406,6 +1408,7 @@ def _run_prepared_agentic_queue(
                 try:
                     prepared = future.result()
                 except Exception as exc:
+                    traceback.print_exception(exc)
                     dashboard_rows[pending_gen.row_index].llm = "error"
                     dashboard_rows[pending_gen.row_index].evaluation = "cancelled"
                     error_cleanup()
@@ -1435,6 +1438,7 @@ def _run_prepared_agentic_queue(
                 try:
                     generated = future.result()
                 except Exception as exc:
+                    traceback.print_exception(exc)
                     dashboard_rows[ready.pending.row_index].llm = "error"
                     dashboard_rows[
                         ready.pending.row_index
@@ -1653,6 +1657,7 @@ def _complete_evaluations(
         try:
             result = completed_future.result()
         except Exception as exc:
+            traceback.print_exception(exc)
             dashboard_rows[pending_evaluation.row_index].evaluation = "error"
             if error_cleanup is None:
                 _cancel_all_pending_work(
