@@ -204,6 +204,11 @@ def resolve_model_meta(
         )
         return LmStudioModelMeta()
 
+    return parse_model_meta(entry)
+
+
+def parse_model_meta(entry: dict[str, Any]) -> LmStudioModelMeta:
+    """Normalize metadata from one LM Studio model entry."""
     quantization = entry.get("quantization")
     quantization_name = (
         str(quantization["name"]).strip() or None

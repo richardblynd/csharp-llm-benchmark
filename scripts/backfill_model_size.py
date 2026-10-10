@@ -24,6 +24,7 @@ from benchmark.lmstudio_meta import (  # noqa: E402
     is_local_server,
     match_model,
     fetch_models,
+    parse_model_meta,
 )
 
 
@@ -112,16 +113,9 @@ def main() -> None:
             skipped += 1
             continue
 
-        size_raw = entry.get("size_bytes")
-        try:
-            size_bytes = int(size_raw) if size_raw is not None else None
-        except (TypeError, ValueError):
-            size_bytes = None
-        params_string = (
-            str(entry["params_string"]).strip() or None
-            if entry.get("params_string")
-            else None
-        )
+        meta = parse_model_meta(entry)
+        size_bytes = meta.size_bytes
+        params_string = meta.params_string
 
         prefix = "[dry-run] " if args.dry_run else ""
         if size_bytes is not None:
