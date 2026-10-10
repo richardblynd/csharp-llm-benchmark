@@ -286,6 +286,14 @@ automatically.
 
 ### Agentic generator notes
 
+Pi and OpenCode session output is written directly to each task's
+`pi-events.jsonl` / `pi-stderr.log` or
+`opencode-events.jsonl` / `opencode-stderr.log` while the agent runs. The runner
+reads JSONL events one at a time to extract usage and errors; it does not retain
+the full session output in RAM. Partial logs remain available after a timeout
+or interruption. OpenCode's `response.md` remains a copy of its event log.
+Retries replace the current OpenCode session logs, as before.
+
 Timed-out OpenCode containers are removed by default. For debugging a stuck
 agent, set `opencode.keep_timed_out_containers: true`; the timed-out container
 name is then recorded in the task `result.json` under `opencode.container_name`,

@@ -25,6 +25,8 @@ class CommandResult:
     stderr: str
     timed_out: bool = False
     container_name: str | None = None
+    stdout_path: Path | None = None
+    stderr_path: Path | None = None
 
     @property
     def combined_output(self) -> str:

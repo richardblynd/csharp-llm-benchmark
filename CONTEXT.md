@@ -10,6 +10,10 @@ _Avoid_: Mode, backend, provider
 
 **Agentic generator**:
 A generator that spawns an autonomous coding agent in Docker with file I/O and shell access. The agent receives the task contract as natural language and produces code files through tool calls. OpenCode and Pi are both agentic generators.
+Session stdout and stderr are redirected to task log files during execution.
+Usage and error parsing reads one JSONL event at a time, so runner memory does
+not grow with the complete session log. CommandResult carries file paths for
+sessions and short output strings for installation/preparation commands.
 _Avoid_: AI coder, coding bot
 
 **OpenCode mode**:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import io
 import os
 import shlex
 import sys
@@ -9,9 +10,10 @@ import subprocess
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from contextlib import ExitStack
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, ClassVar, Protocol
+from typing import Any, ClassVar, Iterator, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 from benchmark.config import AppConfig, OpenCodeConfig, PiConfig
@@ -247,7 +249,7 @@ class OpenCodeGenerator:
                     f"Attempt {attempt} produced no usable model result "
                     f"(exit_code={run.exit_code}, "
                     f"session_time={session_time_seconds:.2f}s, "
-                    f"events_bytes={len(run.stdout)}); retrying."
+                    f"events_bytes={_stdout_size(run)}); retrying."
                 )
         finally:
             preserve_timeout_home = (
@@ -271,6 +273,8 @@ class OpenCodeGenerator:
                 timeout=self._opencode.timeout_seconds,
                 env={"OPENCODE_BENCHMARK_API_KEY": self._llm.api_key},
                 keep_on_timeout=self._opencode.keep_timed_out_containers,
+                output_dir=prepared.task_dir,
+                output_prefix="opencode",
             )
         else:
             run = self._run_fresh_session(prepared)
@@ -297,6 +301,8 @@ class OpenCodeGenerator:
             timeout=self._opencode.timeout_seconds,
             env={"OPENCODE_BENCHMARK_API_KEY": self._llm.api_key},
             keep_on_timeout=self._opencode.keep_timed_out_containers,
+            output_dir=prepared.task_dir,
+            output_prefix="opencode",
         )
 
     def _write_session_logs(
@@ -305,15 +311,17 @@ class OpenCodeGenerator:
         run: CommandResult,
     ) -> None:
         task_dir = prepared.task_dir
-        (task_dir / "response.md").write_text(run.stdout, encoding="utf-8")
-        (task_dir / "opencode-events.jsonl").write_text(
-            run.stdout,
-            encoding="utf-8",
-        )
-        (task_dir / "opencode-stderr.log").write_text(
-            run.stderr,
-            encoding="utf-8",
-        )
+        if run.stdout_path is not None:
+            shutil.copyfile(run.stdout_path, task_dir / "response.md")
+        else:
+            (task_dir / "response.md").write_text(run.stdout, encoding="utf-8")
+            (task_dir / "opencode-events.jsonl").write_text(
+                run.stdout, encoding="utf-8"
+            )
+        if run.stderr_path is None:
+            (task_dir / "opencode-stderr.log").write_text(
+                run.stderr, encoding="utf-8"
+            )
 
     def _build_solution(
         self,
@@ -342,8 +350,9 @@ class OpenCodeGenerator:
             container_name=run.container_name,
             attempts=attempts,
         )
-        usage = _parse_agentic_usage(run.stdout)
-        opencode_error = _parse_opencode_error(run.stdout)
+        output = _stdout_source(run)
+        usage = _parse_agentic_usage(output)
+        opencode_error = _parse_opencode_error(output)
         if opencode_error is not None:
             return (
                 GeneratedSolution(
@@ -361,7 +370,7 @@ class OpenCodeGenerator:
             )
 
         if not generated_path.exists():
-            if _opencode_session_missing_model_result(run.stdout):
+            if _opencode_session_missing_model_result(output):
                 # An empty session (clean exit, no model output, no generated
                 # file) is almost always a transient backend hiccup, not a
                 # model failure: the same task succeeds on other attempts.
@@ -699,23 +708,11 @@ class OpenCodeGenerator:
                 timeout=self._opencode.timeout_seconds,
                 env={"OPENCODE_BENCHMARK_API_KEY": self._llm.api_key},
                 keep_on_timeout=self._opencode.keep_timed_out_containers,
+                output_dir=prepared.task_dir,
+                output_prefix="opencode",
             )
             timed_out = run.timed_out
-            if run.timed_out and self._opencode.keep_timed_out_containers:
-                return CommandResult(
-                    exit_code=run.exit_code,
-                    stdout=run.stdout,
-                    stderr=run.stderr,
-                    timed_out=run.timed_out,
-                    container_name=prepared.container_name,
-                )
-            return CommandResult(
-                exit_code=run.exit_code,
-                stdout=run.stdout,
-                stderr=run.stderr,
-                timed_out=run.timed_out,
-                container_name=prepared.container_name,
-            )
+            return replace(run, container_name=prepared.container_name)
         finally:
             if not (timed_out and self._opencode.keep_timed_out_containers):
                 _remove_container(prepared.container_name)
@@ -894,25 +891,49 @@ def _run_docker_command(
     timeout: int | float | None = None,
     env: dict[str, str] | None = None,
     keep_on_timeout: bool = False,
+    output_dir: Path | None = None,
+    output_prefix: str = "agent",
 ) -> CommandResult:
-    """Run a Docker command and return a CommandResult."""
+    """Run a command, redirecting long agent sessions directly to log files.
+
+    Installation and preparation commands still return their short output as
+    strings. Agent sessions return paths instead, without buffering their
+    output in Python, even while subprocess.run waits for the deadline.
+    """
     subprocess_env = os.environ.copy()
     if env:
         subprocess_env.update(env)
+    stdout_path = (
+        output_dir / f"{output_prefix}-events.jsonl" if output_dir is not None else None
+    )
+    stderr_path = (
+        output_dir / f"{output_prefix}-stderr.log" if output_dir is not None else None
+    )
     try:
-        completed = subprocess.run(
-            docker_command,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=subprocess_env,
-        )
+        with ExitStack() as files:
+            output_options = (
+                {
+                    "stdout": files.enter_context(stdout_path.open("wb")),
+                    "stderr": files.enter_context(stderr_path.open("wb")),
+                }
+                if stdout_path is not None and stderr_path is not None
+                else {"capture_output": True}
+            )
+            completed = subprocess.run(
+                docker_command,
+                check=False,
+                text=True,
+                timeout=timeout,
+                env=subprocess_env,
+                **output_options,
+            )
         return CommandResult(
             exit_code=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
+            stdout=completed.stdout or "",
+            stderr=completed.stderr or "",
             container_name=_extract_docker_container_name(docker_command),
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
         )
     except subprocess.TimeoutExpired as exc:
         container_name = _extract_docker_container_name(docker_command)
@@ -937,9 +958,21 @@ def _run_docker_command(
             stderr=decode_output(exc.stderr),
             timed_out=True,
             container_name=container_name if keep_on_timeout else None,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
         )
     except OSError as exc:
         return CommandResult(exit_code=127, stdout="", stderr=str(exc))
+
+
+def _stdout_source(run: CommandResult) -> str | Path:
+    return run.stdout_path if run.stdout_path is not None else run.stdout
+
+
+def _stdout_size(run: CommandResult) -> int:
+    if run.stdout_path is not None:
+        return run.stdout_path.stat().st_size
+    return len(run.stdout)
 
 
 def create_solution_generator(config: AppConfig) -> SolutionGenerator:
@@ -1071,6 +1104,8 @@ class PiGenerator:
                 timeout=self._pi.timeout_seconds,
                 env={"OPENCODE_BENCHMARK_API_KEY": self._llm.api_key},
                 keep_on_timeout=self._pi.keep_timed_out_containers,
+                output_dir=prepared.task_dir,
+                output_prefix="pi",
             )
         return run, time.perf_counter() - session_started_at
 
@@ -1086,15 +1121,13 @@ class PiGenerator:
                 timeout=self._pi.timeout_seconds,
                 env={"OPENCODE_BENCHMARK_API_KEY": self._llm.api_key},
                 keep_on_timeout=self._pi.keep_timed_out_containers,
+                output_dir=prepared.task_dir,
+                output_prefix="pi",
             )
             timed_out = run.timed_out
             if timed_out and self._pi.keep_timed_out_containers:
-                return CommandResult(
-                    exit_code=run.exit_code,
-                    stdout=run.stdout,
-                    stderr=run.stderr,
-                    timed_out=True,
-                    container_name=prepared.container_name,
+                return replace(
+                    run, timed_out=True, container_name=prepared.container_name
                 )
             return run
         finally:
@@ -1107,9 +1140,9 @@ class PiGenerator:
         run: CommandResult,
     ) -> None:
         task_dir = prepared.task_dir
-        # (task_dir / "response.md").write_text(run.stdout, encoding="utf-8")
-        # (task_dir / "pi-events.jsonl").write_text(run.stdout, encoding="utf-8")
-        if run.stderr:
+        if run.stdout_path is None:
+            (task_dir / "pi-events.jsonl").write_text(run.stdout, encoding="utf-8")
+        if run.stderr_path is None and run.stderr:
             (task_dir / "pi-stderr.log").write_text(run.stderr, encoding="utf-8")
 
     def _ensure_pi_installed(self) -> tuple[float, str]:
@@ -1342,7 +1375,7 @@ class PiGenerator:
             container_name=run.container_name,
         )
 
-        usage = _parse_agentic_usage(run.stdout)
+        usage = _parse_agentic_usage(_stdout_source(run))
 
         generated_path = workspace / task.generated_file
         if not generated_path.exists():
@@ -1448,7 +1481,27 @@ def translate_base_url_for_container(base_url: str) -> str:
     return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
 
 
-def _parse_agentic_usage(text: str) -> LlmUsage:
+def _jsonl_events(source: str | Path) -> Iterator[dict[str, Any]]:
+    """Read one JSONL event at a time; never materialize the session log."""
+    stream = (
+        source.open(encoding="utf-8", errors="replace")
+        if isinstance(source, Path)
+        else io.StringIO(source)
+    )
+    with stream:
+        for line in stream:
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                # A process interrupted mid-event can leave an incomplete tail.
+                continue
+            if isinstance(payload, dict):
+                yield payload
+
+
+def _parse_agentic_usage(source: str | Path) -> LlmUsage:
     """Parse token usage from OpenCode or Pi JSONL events.
 
     The recursive collector maps each generator's token fields to our
@@ -1460,14 +1513,7 @@ def _parse_agentic_usage(text: str) -> LlmUsage:
         "total_tokens": None,
         "reasoning_tokens": None,
     }
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    for payload in _jsonl_events(source):
         _collect_usage(payload, totals)
     return LlmUsage(
         prompt_tokens=totals["prompt_tokens"],
@@ -1477,15 +1523,8 @@ def _parse_agentic_usage(text: str) -> LlmUsage:
     )
 
 
-def _parse_opencode_error(text: str) -> str | None:
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+def _parse_opencode_error(source: str | Path) -> str | None:
+    for payload in _jsonl_events(source):
         if payload.get("type") != "error":
             continue
         error = payload.get("error")
@@ -1500,15 +1539,8 @@ def _parse_opencode_error(text: str) -> str | None:
     return None
 
 
-def _opencode_session_missing_model_result(text: str) -> bool:
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+def _opencode_session_missing_model_result(source: str | Path) -> bool:
+    for payload in _jsonl_events(source):
         event_type = payload.get("type")
         part = payload.get("part")
         if event_type == "tool_use":
