@@ -238,7 +238,7 @@ class OpenCodeGenerator:
                 env={"OPENCODE_BENCHMARK_API_KEY": self._llm.api_key},
             )
             if create.exit_code != 0:
-                self._remove_container(container_name)
+                _remove_container(container_name)
                 raise RuntimeError(
                     "OpenCode container preparation failed: "
                     + create.combined_output
@@ -528,7 +528,7 @@ class OpenCodeGenerator:
 
     def cleanup_prepared(self, prepared: PreparedOpenCodeGeneration) -> None:
         if prepared.precreated:
-            self._remove_container(prepared.container_name)
+            _remove_container(prepared.container_name)
         self._cleanup_opencode_home(prepared)
 
     def _cleanup_opencode_home(
@@ -761,23 +761,7 @@ class OpenCodeGenerator:
             )
         finally:
             if not (timed_out and self._opencode.keep_timed_out_containers):
-                self._remove_container(prepared.container_name)
-
-    def _remove_container(self, container_name: str) -> None:
-        try:
-            subprocess.run(
-                ["docker", "rm", "-f", container_name],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-        except (subprocess.TimeoutExpired, OSError) as cleanup_exc:
-            print(
-                f"  [benchmark] could not remove container {container_name}: "
-                f"{cleanup_exc}",
-                file=sys.stderr,
-            )
+                _remove_container(prepared.container_name)
 
     def _opencode_install_dir(self) -> Path:
         package_key = _safe_cache_key(self._opencode.package)
@@ -930,6 +914,23 @@ def _ensure_is_directory(path: Path, *, retries: int = 5) -> None:
         )
 
 
+def _remove_container(container_name: str) -> None:
+    try:
+        subprocess.run(
+            ["docker", "rm", "-f", container_name],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, OSError) as cleanup_exc:
+        print(
+            f"  [benchmark] could not remove container {container_name}: "
+            f"{cleanup_exc}",
+            file=sys.stderr,
+        )
+
+
 def _run_docker_command(
     docker_command: list[str],
     *,
@@ -1058,7 +1059,7 @@ class PiGenerator:
                 env={"OPENCODE_BENCHMARK_API_KEY": self._llm.api_key},
             )
             if create_result.exit_code != 0:
-                self._remove_container(container_name)
+                _remove_container(container_name)
                 raise RuntimeError(
                     "Pi container preparation failed: " + create_result.combined_output
                 )
@@ -1094,7 +1095,7 @@ class PiGenerator:
 
     def cleanup_prepared(self, prepared: PreparedPiGeneration) -> None:
         if prepared.precreated:
-            self._remove_container(prepared.container_name)
+            _remove_container(prepared.container_name)
         self._cleanup_pi_home(prepared)
 
     # -- internal helpers ------------------------------------------------------
@@ -1141,7 +1142,7 @@ class PiGenerator:
             return run
         finally:
             if not (timed_out and self._pi.keep_timed_out_containers):
-                self._remove_container(prepared.container_name)
+                _remove_container(prepared.container_name)
 
     def _write_session_logs(
         self,
@@ -1445,22 +1446,6 @@ class PiGenerator:
         home_dir = prepared.task_dir / "pi-home"
         if home_dir.exists():
             _safe_rmtree(home_dir, safe_parent=prepared.task_dir, ignore_errors=True)
-
-    def _remove_container(self, container_name: str) -> None:
-        try:
-            subprocess.run(
-                ["docker", "rm", "-f", container_name],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-        except (subprocess.TimeoutExpired, OSError) as cleanup_exc:
-            print(
-                f"  [benchmark] could not remove container {container_name}: "
-                f"{cleanup_exc}",
-                file=sys.stderr,
-            )
 
     def _preflight_cache_key(self) -> tuple[str, ...]:
         return (
