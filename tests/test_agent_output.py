@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import subprocess
 import sys
@@ -12,7 +13,8 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from benchmark.config import AppConfig, OpenCodeConfig, PiConfig
+from benchmark.config import AppConfig, OpenCodeConfig, PiConfig, apply_cli_overrides, load_config
+from benchmark.agent_events import copy_compact_events, run_with_compact_events
 from benchmark.generation import (
     OpenCodeGenerator,
     OpenCodePreflight,
@@ -30,6 +32,82 @@ from benchmark.tasks import load_tasks
 
 
 class AgentOutputTests(unittest.TestCase):
+    def test_compact_capture_discards_enormous_updates_with_bounded_memory(self):
+        script = (
+            "import sys; out=sys.stdout.buffer; "
+            "out.write(b'{\"type\":\"message_update\",\"text\":\"'); "
+            "[out.write(b'x'*65536) for _ in range(512)]; "
+            "out.write(b'\"}\\n{\"type\":\"message_end\",\"message\":{\"usage\":{\"output\":3}}}\\n'); "
+            "sys.stderr.write('diagnostic'); sys.exit(7)"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            tracemalloc.start()
+            try:
+                result = _run_docker_command(
+                    [sys.executable, "-c", script], output_dir=Path(directory),
+                    output_prefix="pi", compact_events=True, timeout=20,
+                )
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+            self.assertLess(peak, 2 * 1024**2)
+            self.assertEqual(result.exit_code, 7)
+            self.assertLess(result.stdout_path.stat().st_size, 100)
+            self.assertEqual(_parse_agentic_usage(result.stdout_path, generator="pi").completion_tokens, 3)
+            self.assertEqual(result.stderr_path.read_text(), "diagnostic")
+
+    def test_compaction_keeps_unknown_errors_tools_and_incomplete_final_events(self):
+        records = [
+            b'{"type":"message_update","text":"partial"}\n',
+            b'{"type":"tool_execution_update","text":"partial"}\n',
+            b'{"type":"message_end","message":{"text":"final"}}\n',
+            b'{"type":"tool_execution_end","result":{"isError":true}}\n',
+            b'{"type":"compaction_end","aborted":false}\n',
+            b'{"type":"error","error":"failed"}\n',
+            b'{"type":"future_event"}\n',
+            b'non-json diagnostic\n',
+            b'{"type":"message_end","unfinished":"',
+        ]
+        output = io.BytesIO()
+        copy_compact_events(io.BytesIO(b"".join(records)), output)
+        self.assertEqual(output.getvalue(), b"".join(records[2:]))
+
+    def test_final_pi_usage_is_identical_for_compact_and_full_logs(self):
+        message = {"role": "assistant", "usage": {
+            "input": 10, "output": 5, "totalTokens": 15, "reasoning": 2,
+        }}
+        events = [
+            {"type": "message_update", "message": message},
+            {"type": "message_end", "message": message},
+            {"type": "turn_end", "message": message},
+            {"type": "agent_end", "messages": [message]},
+            {"type": "compaction_end", "result": {"usage": {
+                "input": 3, "output": 1, "totalTokens": 4, "reasoning": 1,
+            }}},
+        ]
+        raw = b"".join(json.dumps(event).encode() + b"\n" for event in events)
+        compact = io.BytesIO()
+        copy_compact_events(io.BytesIO(raw), compact)
+        full_usage = _parse_agentic_usage(raw.decode(), generator="pi")
+        compact_usage = _parse_agentic_usage(compact.getvalue().decode(), generator="pi")
+        self.assertEqual(full_usage, compact_usage)
+        self.assertEqual(full_usage.prompt_tokens, 13)
+        self.assertEqual(full_usage.completion_tokens, 6)
+        self.assertEqual(full_usage.total_tokens, 19)
+        self.assertEqual(full_usage.reasoning_tokens, 3)
+
+    def test_capture_failure_stops_agent_instead_of_waiting_for_deadline(self):
+        class FailingDestination(io.BytesIO):
+            def write(self, data):
+                raise OSError("disk full")
+
+        with tempfile.TemporaryFile() as stderr:
+            with self.assertRaisesRegex(RuntimeError, "disk full"):
+                run_with_compact_events(
+                    [sys.executable, "-c", "import time; print('event',flush=True); time.sleep(20)"],
+                    stdout=FailingDestination(), stderr=stderr, timeout=10, env={},
+                )
+
     def test_parallel_large_output_does_not_accumulate_in_python_memory(self):
         # Exercise the actual subprocess path at the user's concurrency, without
         # Docker or inference. The former capture accumulated 64 MiB here.
@@ -95,8 +173,8 @@ class AgentOutputTests(unittest.TestCase):
 
     def test_timeout_preserves_partial_output_and_container_policy(self):
         script = "import sys,time; print('partial',flush=True); time.sleep(10)"
-        for keep in (False, True):
-            with self.subTest(keep=keep), tempfile.TemporaryDirectory() as directory:
+        for keep, compact in ((False, False), (True, False), (False, True), (True, True)):
+            with self.subTest(keep=keep, compact=compact), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 real_run = subprocess.run
 
@@ -110,6 +188,7 @@ class AgentOutputTests(unittest.TestCase):
                         [sys.executable, "-c", script, "--name", "test-session"],
                         timeout=0.5, keep_on_timeout=keep, output_dir=root,
                         output_prefix="pi",
+                        compact_events=compact,
                     )
                 self.assertEqual(result.exit_code, 124)
                 self.assertTrue(result.timed_out)
@@ -191,6 +270,8 @@ class GeneratorFileOutputTests(unittest.TestCase):
                     def execute(command, **kwargs):
                         self.assertEqual(kwargs["output_dir"], root)
                         self.assertEqual(kwargs["output_prefix"], generator)
+                        if generator == "pi":
+                            self.assertTrue(kwargs["compact_events"])
                         return _run_docker_command(
                             [sys.executable, "-c", "import sys; sys.stdout.write(sys.argv[1])", json.dumps(event) + "\n"],
                             **kwargs,
@@ -206,6 +287,29 @@ class GeneratorFileOutputTests(unittest.TestCase):
                     self.assertTrue((root / f"{generator}-stderr.log").exists())
                     if generator == "opencode":
                         self.assertEqual((root / "response.md").read_bytes(), (root / "opencode-events.jsonl").read_bytes())
+
+    def test_pi_full_log_setting_loads_and_survives_cli_overrides(self):
+        self.assertFalse(self.config.pi.full_event_log)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.yaml"
+            path.write_text('benchmark:\n  generator: pi\npi:\n  version: "test"\n  full_event_log: true\n')
+            config = load_config(path)
+            self.assertTrue(apply_cli_overrides(config, generator="pi").pi.full_event_log)
+            path.write_text('pi:\n  full_event_log: invalid\n')
+            with self.assertRaisesRegex(ValueError, "pi.full_event_log"):
+                load_config(path)
+
+    def test_pi_full_log_bypasses_filter_for_both_session_paths(self):
+        config = replace(self.config, pi=replace(self.config.pi, full_event_log=True))
+        for precreated in (False, True):
+            with self.subTest(precreated=precreated), tempfile.TemporaryDirectory() as directory:
+                prepared = self.prepared(Path(directory), "pi", precreated)
+                instance = PiGenerator(config)
+                with patch("benchmark.generation._run_docker_command", return_value=CommandResult(0, "", "")) as run, patch(
+                    "benchmark.generation._remove_container"
+                ):
+                    instance._execute_session(prepared)
+                self.assertFalse(run.call_args.kwargs["compact_events"])
 
     def test_precreated_timeout_keeps_file_metadata_and_expected_container_cleanup(self):
         for generator in ("pi", "opencode"):

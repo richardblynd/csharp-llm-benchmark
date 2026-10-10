@@ -294,6 +294,14 @@ the full session output in RAM. Partial logs remain available after a timeout
 or interruption. OpenCode's `response.md` remains a copy of its event log.
 Retries replace the current OpenCode session logs, as before.
 
+Pi logs are compact by default: final messages, tool calls/results, errors and
+context compactions are kept; `message_update` and `tool_execution_update`
+streaming events are discarded before writing to disk. To retain those updates
+for diagnosis, set `pi.full_event_log: true` in YAML. Both settings count token
+usage only from final `message_end` events and compaction results, avoiding the
+duplicate message snapshots in `turn_end`, `agent_end` and streaming updates.
+Historical `result.json` files keep their previously recorded token totals.
+
 Timed-out OpenCode containers are removed by default. For debugging a stuck
 agent, set `opencode.keep_timed_out_containers: true`; the timed-out container
 name is then recorded in the task `result.json` under `opencode.container_name`,

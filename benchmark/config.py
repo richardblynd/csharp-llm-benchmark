@@ -118,6 +118,7 @@ class PiConfig:
     build_fix_rounds: int = 3
     context_limit: int | None = None
     max_tokens: int | None = None
+    full_event_log: bool = False
 
 
 @dataclass(frozen=True)
@@ -423,6 +424,10 @@ def load_config(path: Path | None) -> AppConfig:
                 if pi_data.get("max_tokens") is not None
                 else PiConfig.max_tokens
             ),
+            full_event_log=_bool_value(
+                pi_data.get("full_event_log", PiConfig.full_event_log),
+                "pi.full_event_log",
+            ),
         ),
     )
     _validate_config(config)
@@ -597,6 +602,7 @@ def apply_cli_overrides(
             build_fix_rounds=config.pi.build_fix_rounds,
             context_limit=config.pi.context_limit,
             max_tokens=config.pi.max_tokens,
+            full_event_log=config.pi.full_event_log,
         ),
     )
     _validate_config(updated)

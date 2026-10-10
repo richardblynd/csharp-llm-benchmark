@@ -142,6 +142,7 @@ def write_summary(
                 "build_fix_rounds": config.pi.build_fix_rounds,
                 "context_limit": config.pi.context_limit,
                 "max_tokens": config.pi.max_tokens,
+                "full_event_log": config.pi.full_event_log,
             }
             if config.benchmark.generator == "pi"
             else None

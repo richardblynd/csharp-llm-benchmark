@@ -17,6 +17,7 @@ from typing import Any, ClassVar, Iterator, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 from benchmark.config import AppConfig, OpenCodeConfig, PiConfig
+from benchmark.agent_events import run_with_compact_events
 from benchmark.fsafety import cache_safety_root, safe_rmtree as _safe_rmtree
 from benchmark.solution import (
     ExtractedCode,
@@ -893,6 +894,7 @@ def _run_docker_command(
     keep_on_timeout: bool = False,
     output_dir: Path | None = None,
     output_prefix: str = "agent",
+    compact_events: bool = False,
 ) -> CommandResult:
     """Run a command, redirecting long agent sessions directly to log files.
 
@@ -919,14 +921,22 @@ def _run_docker_command(
                 if stdout_path is not None and stderr_path is not None
                 else {"capture_output": True}
             )
-            completed = subprocess.run(
-                docker_command,
-                check=False,
-                text=True,
-                timeout=timeout,
-                env=subprocess_env,
-                **output_options,
-            )
+            if compact_events:
+                if stdout_path is None:
+                    raise ValueError("Compact events require an output directory")
+                completed = run_with_compact_events(
+                    docker_command, timeout=timeout, env=subprocess_env,
+                    **output_options,
+                )
+            else:
+                completed = subprocess.run(
+                    docker_command,
+                    check=False,
+                    text=True,
+                    timeout=timeout,
+                    env=subprocess_env,
+                    **output_options,
+                )
         return CommandResult(
             exit_code=completed.returncode,
             stdout=completed.stdout or "",
@@ -1106,6 +1116,7 @@ class PiGenerator:
                 keep_on_timeout=self._pi.keep_timed_out_containers,
                 output_dir=prepared.task_dir,
                 output_prefix="pi",
+                compact_events=not self._pi.full_event_log,
             )
         return run, time.perf_counter() - session_started_at
 
@@ -1123,6 +1134,7 @@ class PiGenerator:
                 keep_on_timeout=self._pi.keep_timed_out_containers,
                 output_dir=prepared.task_dir,
                 output_prefix="pi",
+                compact_events=not self._pi.full_event_log,
             )
             timed_out = run.timed_out
             if timed_out and self._pi.keep_timed_out_containers:
@@ -1375,7 +1387,7 @@ class PiGenerator:
             container_name=run.container_name,
         )
 
-        usage = _parse_agentic_usage(_stdout_source(run))
+        usage = _parse_agentic_usage(_stdout_source(run), generator="pi")
 
         generated_path = workspace / task.generated_file
         if not generated_path.exists():
@@ -1501,7 +1513,7 @@ def _jsonl_events(source: str | Path) -> Iterator[dict[str, Any]]:
                 yield payload
 
 
-def _parse_agentic_usage(source: str | Path) -> LlmUsage:
+def _parse_agentic_usage(source: str | Path, *, generator: str | None = None) -> LlmUsage:
     """Parse token usage from OpenCode or Pi JSONL events.
 
     The recursive collector maps each generator's token fields to our
@@ -1514,7 +1526,15 @@ def _parse_agentic_usage(source: str | Path) -> LlmUsage:
         "reasoning_tokens": None,
     }
     for payload in _jsonl_events(source):
-        _collect_usage(payload, totals)
+        if generator == "pi":
+            # Pi repeats messages in message_update, turn_end and agent_end.
+            # Count each final message once, plus separate compaction requests.
+            if payload.get("type") == "message_end":
+                _collect_usage(payload.get("message", {}).get("usage", {}), totals)
+            elif payload.get("type") == "compaction_end":
+                _collect_usage(payload.get("result", {}).get("usage", {}), totals)
+        else:
+            _collect_usage(payload, totals)
     return LlmUsage(
         prompt_tokens=totals["prompt_tokens"],
         completion_tokens=totals["completion_tokens"],

@@ -14,6 +14,9 @@ Session stdout and stderr are redirected to task log files during execution.
 Usage and error parsing reads one JSONL event at a time, so runner memory does
 not grow with the complete session log. CommandResult carries file paths for
 sessions and short output strings for installation/preparation commands.
+Pi discards intermediate message/tool streaming updates before persistence by
+default; `pi.full_event_log` enables full diagnostics. Pi usage counts each
+final message and compaction request once in either logging setting.
 _Avoid_: AI coder, coding bot
 
 **OpenCode mode**:

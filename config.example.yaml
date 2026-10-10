@@ -116,6 +116,9 @@ opencode:
   # container_base_url: "http://host.docker.internal:1234/v1"
 
 pi:
+  # Keep final events and tool results by default; enable streaming updates
+  # only when diagnosing the agent (full logs can be very large).
+  full_event_log: false
   # Required when benchmark.generator is "pi".
   version: "0.82.1"
   package: "@earendil-works/pi-coding-agent"
