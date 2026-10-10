@@ -36,6 +36,7 @@ from benchmark.report import (
     create_run_dir,
     find_highest_token_task,
     format_duration_hms,
+    sum_known_tokens,
     write_summary,
 )
 from benchmark.runner import DockerRunner, TaskRunResult, write_result_json
@@ -625,7 +626,7 @@ def _execute_benchmark(
         task_score.llm_response_time_seconds for task_score in best_run.task_scores
     )
     print(f"Total LLM response time: {format_duration_hms(total_llm_time)}")
-    total_llm_tokens = _sum_known_tokens(
+    total_llm_tokens = sum_known_tokens(
         task_score.llm_usage.total_tokens for task_score in best_run.task_scores
     )
     print(f"Total LLM tokens: {_format_tokens(total_llm_tokens)}")
@@ -1815,13 +1816,6 @@ def _format_difficulty(difficulty: str | None) -> str:
     if difficulty is None or difficulty.strip().lower() == "all":
         return "across all difficulties"
     return f"for difficulty '{difficulty}'"
-
-
-def _sum_known_tokens(values) -> int | None:
-    known_values = [value for value in values if value is not None]
-    if not known_values:
-        return None
-    return sum(known_values)
 
 
 def _optional_int(value) -> int | None:

@@ -5,7 +5,7 @@ import re
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from benchmark.config import AppConfig
 from benchmark.lmstudio_meta import format_model_size
@@ -52,16 +52,16 @@ def write_summary(
         task_score.llm_response_time_seconds for task_score in task_scores
     )
     average_llm_time = total_llm_time / len(task_scores) if task_scores else 0.0
-    total_prompt_tokens = _sum_known_tokens(
+    total_prompt_tokens = sum_known_tokens(
         task_score.llm_usage.prompt_tokens for task_score in task_scores
     )
-    total_completion_tokens = _sum_known_tokens(
+    total_completion_tokens = sum_known_tokens(
         task_score.llm_usage.completion_tokens for task_score in task_scores
     )
-    total_tokens = _sum_known_tokens(
+    total_tokens = sum_known_tokens(
         task_score.llm_usage.total_tokens for task_score in task_scores
     )
-    total_reasoning_tokens = _sum_known_tokens(
+    total_reasoning_tokens = sum_known_tokens(
         task_score.llm_usage.reasoning_tokens for task_score in task_scores
     )
     highest_token_task = find_highest_token_task(task_scores)
@@ -252,19 +252,19 @@ def _temperature_scores_payload(temperature_scores: list[Any] | None) -> list[di
                     ),
                 },
                 "llm_token_usage": {
-                    "prompt_tokens": _sum_known_tokens(
+                    "prompt_tokens": sum_known_tokens(
                         task_score.llm_usage.prompt_tokens
                         for task_score in task_scores
                     ),
-                    "completion_tokens": _sum_known_tokens(
+                    "completion_tokens": sum_known_tokens(
                         task_score.llm_usage.completion_tokens
                         for task_score in task_scores
                     ),
-                    "total_tokens": _sum_known_tokens(
+                    "total_tokens": sum_known_tokens(
                         task_score.llm_usage.total_tokens
                         for task_score in task_scores
                     ),
-                    "reasoning_tokens": _sum_known_tokens(
+                    "reasoning_tokens": sum_known_tokens(
                         task_score.llm_usage.reasoning_tokens
                         for task_score in task_scores
                     ),
@@ -452,7 +452,7 @@ def _format_run_dir_label(value: str) -> str:
     return cleaned[:80] or "unknown"
 
 
-def _sum_known_tokens(values) -> int | None:
+def sum_known_tokens(values: Iterable[int | None]) -> int | None:
     known_values = [value for value in values if value is not None]
     if not known_values:
         return None
