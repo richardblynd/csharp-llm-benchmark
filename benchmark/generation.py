@@ -384,7 +384,7 @@ class OpenCodeGenerator:
             container_name=run.container_name,
             attempts=attempts,
         )
-        usage = _parse_opencode_usage(run.stdout)
+        usage = _parse_agentic_usage(run.stdout)
         opencode_error = _parse_opencode_error(run.stdout)
         if opencode_error is not None:
             return (
@@ -1384,7 +1384,7 @@ class PiGenerator:
             container_name=run.container_name,
         )
 
-        usage = _parse_pi_usage(run.stdout)
+        usage = _parse_agentic_usage(run.stdout)
 
         generated_path = workspace / task.generated_file
         if not generated_path.exists():
@@ -1507,36 +1507,11 @@ def translate_base_url_for_container(base_url: str) -> str:
     return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
 
 
-def _parse_opencode_usage(text: str) -> LlmUsage:
-    totals = {
-        "prompt_tokens": None,
-        "completion_tokens": None,
-        "total_tokens": None,
-        "reasoning_tokens": None,
-    }
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        _collect_usage(payload, totals)
-    return LlmUsage(
-        prompt_tokens=totals["prompt_tokens"],
-        completion_tokens=totals["completion_tokens"],
-        total_tokens=totals["total_tokens"],
-        reasoning_tokens=totals["reasoning_tokens"],
-    )
+def _parse_agentic_usage(text: str) -> LlmUsage:
+    """Parse token usage from OpenCode or Pi JSONL events.
 
-
-def _parse_pi_usage(text: str) -> LlmUsage:
-    """Parse token usage from pi JSON mode events.
-
-    Pi emits `message_end`/`agent_end` with `usage` objects containing
-    `input`, `output`, and other fields. The recursive `_collect_usage`
-    already maps these to our canonical names.
+    The recursive collector maps each generator's token fields to our
+    canonical names, including Pi's nested ``input``/``output`` fields.
     """
     totals = {
         "prompt_tokens": None,
