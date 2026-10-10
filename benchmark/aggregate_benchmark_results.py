@@ -971,7 +971,7 @@ def render_html(
 
     .chart-panel {{
       flex-shrink: 0;
-      margin-bottom: 12px;
+      margin-top: 16px;
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -1074,7 +1074,8 @@ def render_html(
       display: flex;
       flex-direction: column;
       min-width: 0;
-      overflow: hidden;
+      overflow-y: auto;
+      overflow-x: hidden;
     }}
 
     .summary {{
@@ -1106,7 +1107,7 @@ def render_html(
 
     .table-wrap {{
       flex: 1;
-      min-height: 0;
+      min-height: 500px;
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -1288,7 +1289,6 @@ def render_html(
       </aside>
 
       <div class="table-area">
-{chart_panel}
         <div class="summary">
           <span id="visible-count">Showing {len(grouped_results)} of {len(grouped_results)} groups</span>
           <button id="reset" type="button">Reset filters</button>
@@ -1318,6 +1318,7 @@ def render_html(
           </table>
           <div class="empty" id="empty">No configuration groups match the current filters.</div>
         </div>
+{chart_panel}
       </div>
     </div>
 
