@@ -6,10 +6,16 @@ import json
 import logging
 import math
 import re
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from benchmark.lmstudio_meta import format_model_size
 
 
 DIFFICULTIES = ("easy", "medium", "hard")
@@ -1783,13 +1789,6 @@ def format_duration(seconds: float | None) -> str:
     hours, remainder = divmod(rounded_seconds, 60 * 60)
     minutes, seconds = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-
-def format_model_size(value: int | None) -> str:
-    """Render a model size in bytes as GB with one decimal (GiB-based)."""
-    if value is None:
-        return "n/a"
-    return f"{value / 2**30:.1f} GB"
 
 
 def format_int(value: int | None) -> str:
