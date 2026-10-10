@@ -68,7 +68,9 @@ class AgentGeneratorTests(unittest.TestCase):
                 create_solution_generator(config)
 
     def test_all_runs_exactly_both_agents(self):
-        args = cli._build_parser().parse_args(["run", "--generator", "all"])
+        args = cli._build_parser().parse_args([
+            "run", "--generator", "all", "--calibration-enabled", "false",
+        ])
         with patch("benchmark.cli.load_config", return_value=self.config), patch(
             "benchmark.cli.resolve_model_meta"
         ), patch("benchmark.cli.load_tasks", return_value=[]), patch(

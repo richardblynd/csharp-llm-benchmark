@@ -140,6 +140,59 @@ provider, for example LM Studio, applies its own defaults.
 
 ## Agentic generators
 
+### Speed calibration and agent timeouts
+
+Before discovery or task generation, the runner warms up the model with
+`generation_workers` simultaneous requests, waits for all of them to finish,
+then measures three rounds at the same concurrency. Warmup measurements are
+discarded when choosing the speed. The slowest measured request sets the common
+session timeout for both Pi and OpenCode:
+
+```text
+timeout = max(min_timeout_seconds,
+              ceil(safety_factor * (token_budget / tokens_per_second + overhead_seconds)))
+```
+
+The defaults in `benchmark.calibration` are 128 warmup output tokens per request,
+512 output tokens per measured request, a 65,536 token session budget, a 2x safety
+factor, 120 seconds of overhead, and a 300 second minimum. The token budget is an
+estimate across all agent turns, not a token limit enforced on the agent. Slower
+models get more time. This remains a deadline for an entire agent session; it
+does not detect loops or guarantee that every productive session will finish.
+Increase the budget, overhead, or safety factor for longer tasks or contexts.
+
+Speed is **output tokens per second per request under concurrent load**, using
+the provider's `usage.completion_tokens` divided by elapsed request time. It
+includes request latency, prompt processing and any reasoning tokens counted by
+the provider. It is not aggregate server throughput or pure decoding speed.
+These short prompts do not reproduce the growing context of an entire agent
+session; the configurable overhead and safety factor provide headroom.
+Configure the server to accept the same number of concurrent predictions as
+`generation_workers`; CLI overrides are applied before calibration.
+
+The probes are unscored OpenAI-compatible streaming requests to the configured
+model and endpoint. The endpoint must support `stream_options.include_usage`.
+Their tokens and time are saved separately in `calibration.json` and in the
+summary, and excluded from task totals and scores. `request_timeout_seconds`
+(default 600) guards each probe; if calibration fails, the run stops with a
+diagnostic instead of silently using a fixed agent timeout. When running
+`--generator all`, both agents share one calibration.
+
+The consolidated HTML and Markdown reports show **Speed Pi (tok/s)** and
+**Speed OpenCode (tok/s)** from the same runs that supplied the displayed scores.
+Hover over an HTML speed to see its concurrency and session timeout. Older runs
+without calibration show `n/a`.
+
+Resuming a calibrated run reuses its saved measurements and timeout. The model,
+endpoint, concurrency, sampling parameters and calibration settings must match.
+For runs created before calibration existed, resume with
+`--calibration-enabled false`. This option also disables calibration for new
+runs, which then use `pi.timeout_seconds` and `opencode.timeout_seconds`:
+
+```bash
+python -m benchmark.cli run --config config.yaml --calibration-enabled false
+```
+
 The default generator is OpenCode. Both OpenCode and pi run inside the shared agentic image:
 
 ```bash

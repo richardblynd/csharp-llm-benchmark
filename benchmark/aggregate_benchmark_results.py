@@ -32,6 +32,13 @@ TAG_COLORS = (
 
 
 @dataclass(frozen=True)
+class CalibrationSpeed:
+    tokens_per_second: float
+    generation_workers: int
+    timeout_seconds: int
+
+
+@dataclass(frozen=True)
 class BenchmarkResult:
     run_name: str
     generator: str
@@ -54,6 +61,7 @@ class BenchmarkResult:
     final_score: float | None
     earned_points: float | None
     available_points: float | None
+    calibration: CalibrationSpeed | None = None
 
 
 @dataclass(frozen=True)
@@ -66,6 +74,8 @@ class GroupedResult:
     context_limit: int
     score_pi: float | None
     score_opencode: float | None
+    calibration_pi: CalibrationSpeed | None = None
+    calibration_opencode: CalibrationSpeed | None = None
 
     def avg_score(self) -> float | None:
         scores = [s for s in (self.score_pi, self.score_opencode) if s is not None]
@@ -102,9 +112,11 @@ def group_results(results: list[BenchmarkResult]) -> list[GroupedResult]:
         model, publisher, quantization, kv_cache_key, context_limit = key
 
         score_map: dict[str, float | None] = {}
+        calibration_map: dict[str, CalibrationSpeed | None] = {}
         for gen_label, r in items:
             if r.final_score is not None and gen_label not in score_map:
                 score_map[gen_label] = r.final_score
+                calibration_map[gen_label] = r.calibration
 
         # Not part of the grouping key on purpose: older runs lack the size,
         # and mixing them with newer runs must not split the group.
@@ -122,6 +134,8 @@ def group_results(results: list[BenchmarkResult]) -> list[GroupedResult]:
             context_limit=context_limit,
             score_pi=score_map.get("Pi"),
             score_opencode=score_map.get("OpenCode"),
+            calibration_pi=calibration_map.get("Pi"),
+            calibration_opencode=calibration_map.get("OpenCode"),
         ))
 
     grouped.sort(key=lambda g: (g.avg_score() is not None, g.avg_score() if g.avg_score() is not None else -1.0), reverse=True)
@@ -358,7 +372,21 @@ def parse_summary(
         final_score=final_score,
         earned_points=earned_points,
         available_points=available_points,
+        calibration=parse_calibration_speed(payload.get("calibration")),
     )
+
+
+def parse_calibration_speed(payload: Any) -> CalibrationSpeed | None:
+    if not isinstance(payload, dict):
+        return None
+    speed = optional_float(payload.get("tokens_per_second"))
+    workers = optional_int(payload.get("generation_workers"))
+    timeout = optional_int(payload.get("timeout_seconds"))
+    if speed is None or not math.isfinite(speed) or speed <= 0 or not workers or not timeout:
+        return None
+    if workers < 1 or timeout < 1:
+        return None
+    return CalibrationSpeed(speed, workers, timeout)
 
 
 def parse_temperature_scores(
@@ -510,8 +538,8 @@ def render_markdown(
         f"- Results directory: `{results_dir}`",
         f"- Configuration groups: `{len(grouped_results)}`",
         "",
-        "| Rank | Model | Publisher | Quantization | KV Cache | Model Size | Context Size | SCORE PI | SCORE OPENCODE | Avg Score | Max Score |",
-        "| ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Rank | Model | Publisher | Quantization | KV Cache | Model Size | Context Size | Speed Pi (tok/s) | Speed OpenCode (tok/s) | SCORE PI | SCORE OPENCODE | Avg Score | Max Score |",
+        "| ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
 
     for rank, g in enumerate(grouped_results, start=1):
@@ -523,6 +551,8 @@ def render_markdown(
             f"| {markdown_code(g.kv_cache_quantization or 'n/a')} "
             f"| `{format_model_size(g.model_size_bytes)}` "
             f"| `{g.context_limit}` "
+            f"| {_format_calibration_speed(g.calibration_pi)} "
+            f"| {_format_calibration_speed(g.calibration_opencode)} "
             f"| {_format_grouped_score(g.score_pi)} "
             f"| {_format_grouped_score(g.score_opencode)} "
             f"| {_format_grouped_score(g.avg_score())} "
@@ -531,6 +561,21 @@ def render_markdown(
 
     lines.append("")
     return "\n".join(lines)
+
+
+def _format_calibration_speed(calibration: CalibrationSpeed | None) -> str:
+    return "n/a" if calibration is None else f"{calibration.tokens_per_second:.2f}"
+
+
+def _calibration_cell(calibration: CalibrationSpeed | None) -> str:
+    title = (
+        "No speed calibration recorded"
+        if calibration is None else
+        f"Slowest request with {calibration.generation_workers} concurrent requests; "
+        f"includes request latency and context processing. Agent timeout: {calibration.timeout_seconds}s"
+    )
+    return f'<td class="numeric" title="{escape_attr(title)}">{_format_calibration_speed(calibration)}</td>'
+
 
 def render_html_row_grouped(rank: int, g: GroupedResult) -> str:
     avg = g.avg_score()
@@ -541,6 +586,8 @@ def render_html_row_grouped(rank: int, g: GroupedResult) -> str:
     search_text = " ".join([
         str(rank), g.model, g.publisher or "", g.quantization or "",
         g.kv_cache_quantization or "", model_size_text, str(g.context_limit),
+        _format_calibration_speed(g.calibration_pi),
+        _format_calibration_speed(g.calibration_opencode),
         _format_grouped_score(g.score_pi),
         _format_grouped_score(g.score_opencode),
         _format_grouped_score(avg),
@@ -556,6 +603,8 @@ def render_html_row_grouped(rank: int, g: GroupedResult) -> str:
         f'data-kv-cache-quant="{escape_attr(g.kv_cache_quantization or "")}" '
         f'data-model-size="{number_attr(g.model_size_bytes)}" '
         f'data-context-limit="{g.context_limit}" '
+        f'data-calibration-pi="{number_attr(g.calibration_pi.tokens_per_second if g.calibration_pi else None)}" '
+        f'data-calibration-opencode="{number_attr(g.calibration_opencode.tokens_per_second if g.calibration_opencode else None)}" '
         f'data-score-pi="{number_attr(g.score_pi)}" '
         f'data-score-opencode="{number_attr(g.score_opencode)}" '
         f'data-avg-score="{number_attr(avg)}" '
@@ -569,6 +618,8 @@ def render_html_row_grouped(rank: int, g: GroupedResult) -> str:
         f'<td>{escape_html(g.kv_cache_quantization or "n/a")}</td>'
         f'<td class="numeric">{escape_html(model_size_text)}</td>'
         f'<td class="numeric">{g.context_limit}</td>'
+        f'{_calibration_cell(g.calibration_pi)}'
+        f'{_calibration_cell(g.calibration_opencode)}'
         f'<td class="numeric" data-extreme-key="scorePi">{_format_grouped_score(g.score_pi)}</td>'
         f'<td class="numeric" data-extreme-key="scoreOpencode">{_format_grouped_score(g.score_opencode)}</td>'
         f'<td class="numeric" data-extreme-key="avgScore">{_format_grouped_score(avg)}</td>'
@@ -1292,6 +1343,7 @@ def render_html(
         </div>
         <div class="table-wrap">
           <table id="results-table">
+            <caption style="text-align: left; padding: 0.75rem; color: var(--muted)">Speed is the slowest calibrated output rate per request under concurrent load. Hover for concurrency and timeout; n/a means unmeasured.</caption>
             <thead>
               <tr>
                 <th class="numeric" data-key="rank" data-type="number">Rank</th>
@@ -1301,6 +1353,8 @@ def render_html(
                 <th data-key="kvCacheQuant" data-type="text">KV Cache</th>
                 <th class="numeric" data-key="modelSize" data-type="number">Model Size</th>
                 <th class="numeric" data-key="contextLimit" data-type="number">Context Size</th>
+                <th class="numeric" data-key="calibrationPi" data-type="number">Speed Pi (tok/s)</th>
+                <th class="numeric" data-key="calibrationOpencode" data-type="number">Speed OpenCode (tok/s)</th>
                 <th class="numeric" data-key="scorePi" data-type="number">Score Pi</th>
                 <th class="numeric" data-key="scoreOpencode" data-type="number">Score OpenCode</th>
                 <th class="numeric" data-key="avgScore" data-type="number">Avg Score</th>

@@ -50,6 +50,20 @@ benchmark:
   # Increase when your API endpoint supports concurrent requests without
   # throttling. Default: 1 (sequential).
   generation_workers: 1
+  # Unscored speed calibration before discovery/generation. Warmup and each
+  # measured round send generation_workers simultaneous requests.
+  calibration:
+    enabled: true
+    warmup_tokens: 128
+    sample_tokens: 512
+    rounds: 3
+    # Estimated total output tokens per agent session, across all tool turns.
+    token_budget: 65536
+    safety_factor: 2.0
+    overhead_seconds: 120
+    min_timeout_seconds: 300
+    # HTTP guard for each warmup/calibration request, not an agent deadline.
+    request_timeout_seconds: 600
   # Runs Docker build/test evaluations in the background while the next task is
   # generated. Increase if the machine can run multiple evaluation containers.
   evaluation_workers: 1
@@ -62,10 +76,11 @@ opencode:
   package: "opencode-ai"
   docker_image: "csharp-llm-benchmark-agentic"
   cache_dir: ".cache/opencode"
+  # Used only when benchmark.calibration.enabled is false.
   timeout_seconds: 900
   keep_timed_out_containers: false
   # Prepares the next task workspace/config while the current OpenCode session
-  # is running. The LLM session itself remains serial.
+  # is running. generation_workers controls concurrent agent sessions.
   prepare_ahead: true
   # More aggressive: docker-create the next task container during preparation,
   # but only docker-start it after the current OpenCode session finishes.
@@ -107,11 +122,12 @@ pi:
   docker_image: "csharp-llm-benchmark-agentic"
   cache_dir: ".cache/pi"
   network: "bridge"
+  # Used only when benchmark.calibration.enabled is false.
   timeout_seconds: 900
   # Preserve containers on timeout for debugging (default: false).
   keep_timed_out_containers: false
   # Prepares the next task workspace/config while the current pi session is
-  # running. The LLM session itself remains serial.
+  # running. generation_workers controls concurrent agent sessions.
   prepare_ahead: true
   # More aggressive: docker-create the next task container during preparation,
   # but only docker-start it after the current pi session finishes.

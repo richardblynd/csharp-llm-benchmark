@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -43,6 +44,19 @@ class LlmConfig:
 
 
 @dataclass(frozen=True)
+class CalibrationConfig:
+    enabled: bool = True
+    warmup_tokens: int = 128
+    sample_tokens: int = 512
+    rounds: int = 3
+    token_budget: int = 65536
+    safety_factor: float = 2.0
+    overhead_seconds: int = 120
+    min_timeout_seconds: int = 300
+    request_timeout_seconds: int = 600
+
+
+@dataclass(frozen=True)
 class BenchmarkConfig:
     difficulty: str | None = None
     output_dir: Path = Path("results")
@@ -51,6 +65,7 @@ class BenchmarkConfig:
     generation_workers: int = 1
     evaluation_workers: int = 1
     generator: str = "opencode"
+    calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
 
 
 @dataclass(frozen=True)
@@ -125,6 +140,9 @@ def load_config(path: Path | None) -> AppConfig:
     opencode_data = data.get("opencode", {})
     opencode_compaction_data = opencode_data.get("compaction", {})
     pi_data = data.get("pi", {})
+    calibration_data = benchmark_data.get("calibration", {})
+    if not isinstance(calibration_data, dict):
+        raise ValueError("benchmark.calibration must be a mapping")
     if not isinstance(opencode_compaction_data, dict):
         raise ValueError("opencode.compaction must be a mapping when set")
 
@@ -222,6 +240,30 @@ def load_config(path: Path | None) -> AppConfig:
             generator=_generator_value(
                 benchmark_data.get("generator", BenchmarkConfig.generator),
                 "benchmark.generator",
+            ),
+            calibration=CalibrationConfig(
+                enabled=_bool_value(
+                    calibration_data.get("enabled", CalibrationConfig.enabled),
+                    "benchmark.calibration.enabled",
+                ),
+                **{
+                    key: _positive_int(
+                        calibration_data.get(key, getattr(CalibrationConfig, key)),
+                        f"benchmark.calibration.{key}",
+                    )
+                    for key in (
+                        "warmup_tokens", "sample_tokens", "rounds", "token_budget",
+                        "min_timeout_seconds", "request_timeout_seconds",
+                    )
+                },
+                safety_factor=_positive_float(
+                    calibration_data.get("safety_factor", CalibrationConfig.safety_factor),
+                    "benchmark.calibration.safety_factor",
+                ),
+                overhead_seconds=_non_negative_int(
+                    calibration_data.get("overhead_seconds", CalibrationConfig.overhead_seconds),
+                    "benchmark.calibration.overhead_seconds",
+                ),
             ),
         ),
         docker=DockerConfig(
@@ -411,6 +453,7 @@ def apply_cli_overrides(
     repetition_penalty: float | None = None,
     context_limit: int | None = None,
     discovery_enabled: bool | None = None,
+    calibration_enabled: bool | None = None,
 ) -> AppConfig:
     updated = AppConfig(
         llm=LlmConfig(
@@ -467,6 +510,14 @@ def apply_cli_overrides(
             ),
         ),
         benchmark=BenchmarkConfig(
+            calibration=replace(
+                config.benchmark.calibration,
+                enabled=(
+                    calibration_enabled
+                    if calibration_enabled is not None
+                    else config.benchmark.calibration.enabled
+                ),
+            ),
             difficulty=(
                 _optional_string(difficulty)
                 if difficulty is not None
@@ -645,6 +696,9 @@ def _generator_value(value: Any, name: str) -> str:
 
 
 def _validate_config(config: AppConfig) -> None:
+    calibration = config.benchmark.calibration
+    if not math.isfinite(calibration.safety_factor) or calibration.safety_factor < 1:
+        raise ValueError("benchmark.calibration.safety_factor must be finite and at least 1")
     if config.benchmark.generator in {"opencode", "all"} and not config.opencode.version:
         raise ValueError(
             "opencode.version is required when benchmark.generator is 'opencode' or 'all'"

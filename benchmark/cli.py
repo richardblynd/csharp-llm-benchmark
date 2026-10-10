@@ -12,6 +12,13 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Union
 
+from benchmark.calibration import (
+    CalibrationResult,
+    apply_calibration,
+    calibrate,
+    load_calibration,
+    save_calibration,
+)
 from benchmark.config import (
     SUPPORTED_GENERATORS,
     apply_cli_overrides,
@@ -377,7 +384,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--opencode-timeout-seconds",
         type=int,
-        help="Timeout for OpenCode install and session commands.",
+        help="Manual OpenCode command timeout, used when calibration is disabled.",
     )
     run.add_argument(
         "--pi-version",
@@ -386,7 +393,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--pi-timeout-seconds",
         type=int,
-        help="Timeout for pi session commands.",
+        help="Manual pi session timeout, used when calibration is disabled.",
     )
     run.add_argument("--task-id", help="Run only one task by id, e.g. easy-001")
     run.add_argument(
@@ -420,6 +427,12 @@ def _build_parser() -> argparse.ArgumentParser:
             "Number of Docker evaluations to run in parallel while new tasks are "
             "generated."
         ),
+    )
+    run.add_argument(
+        "--calibration-enabled",
+        choices=("true", "false"),
+        default=None,
+        help="Enable warmup and parallel speed calibration for automatic agent timeouts.",
     )
     run.add_argument(
         "--discovery-enabled",
@@ -457,6 +470,7 @@ def _execute_benchmark(
     tasks: list[Task],
     args: argparse.Namespace,
     model_meta: LmStudioModelMeta | None = None,
+    calibration_result: CalibrationResult | None = None,
 ) -> BenchmarkScore:
     if model_meta is not None and model_meta.quantization:
         # API value wins over the yaml one (see resolve_model_meta in _run);
@@ -481,6 +495,17 @@ def _execute_benchmark(
             kv_cache_quantization=config.llm.kv_cache_quantization,
             generator_mode=config.benchmark.generator.upper(),
         )
+
+    if config.benchmark.calibration.enabled:
+        if args.resume is not None:
+            calibration_result = load_calibration(run_dir, config)
+            print(f"Reusing calibrated speed: {calibration_result.tokens_per_second:.2f} tokens/s")
+        elif calibration_result is None:
+            calibration_result = calibrate(config)
+        config = apply_calibration(config, calibration_result)
+        save_calibration(run_dir, calibration_result)
+    elif args.resume is not None and (run_dir / "calibration.json").exists():
+        raise ValueError("Resume a calibrated run with calibration enabled and its original settings")
 
     discovery_runs: list[TemperatureRun] | None = None
     reuse_scores: dict[str, TaskScore] | None = None  # task_id → TaskScore from discovery
@@ -612,6 +637,7 @@ def _execute_benchmark(
         discovery_runs=discovery_runs,
         model_size_bytes=model_meta.size_bytes if model_meta else None,
         params_string=model_meta.params_string if model_meta else None,
+        calibration_result=calibration_result,
     )
 
     if is_discovery and discovery_runs:
@@ -704,6 +730,11 @@ def _run(args: argparse.Namespace) -> int:
         repetition_penalty=args.repetition_penalty,
         context_limit=args.context_limit,
         discovery_enabled=discovery_enabled_override,
+        calibration_enabled=(
+            args.calibration_enabled == "true"
+            if args.calibration_enabled is not None
+            else None
+        ),
     )
     if args.resume is None and args.resume_dir is not None:
         raise ValueError("--resume-dir requires --resume")
@@ -724,6 +755,14 @@ def _run(args: argparse.Namespace) -> int:
     )
     _report_quantization_precedence(config.llm.quantization, model_meta)
 
+    # Calibrate once for a new run, after all CLI overrides. Both generators
+    # receive the same measured speed and deadline when selecting "all".
+    calibration_result = (
+        calibrate(config)
+        if config.benchmark.calibration.enabled and args.resume is None
+        else None
+    )
+
     if config.benchmark.generator == "all":
         results = {}
         for mode in SUPPORTED_GENERATORS:
@@ -735,7 +774,8 @@ def _run(args: argparse.Namespace) -> int:
                 mode_benchmark_config = dc_replace(config.benchmark, generator=mode)
                 mode_config = dc_replace(config, benchmark=mode_benchmark_config)
                 score = _execute_benchmark(
-                    mode_config, tasks, args, model_meta=model_meta
+                    mode_config, tasks, args, model_meta=model_meta,
+                    calibration_result=calibration_result,
                 )
                 results[mode] = score
             except Exception as exc:
@@ -754,7 +794,9 @@ def _run(args: argparse.Namespace) -> int:
         print("="*40)
         return 0
 
-    _execute_benchmark(config, tasks, args, model_meta=model_meta)
+    _execute_benchmark(
+        config, tasks, args, model_meta=model_meta, calibration_result=calibration_result
+    )
     return 0
 
 

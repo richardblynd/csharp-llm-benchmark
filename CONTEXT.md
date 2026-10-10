@@ -27,3 +27,17 @@ _Avoid_: Agent container, opencode image
 **Task contract**:
 The prompt.md content of a task: natural-language instructions sent to the coding agent describing what code to produce. It becomes part of the agent's initial instruction.
 _Avoid_: Task description, task spec
+
+**Speed calibration**:
+Unscored streaming inference requests made before agent execution. After a
+parallel warmup, measured rounds run with `generation_workers` concurrent
+requests. The slowest request's output tokens per elapsed second sets a common
+agent session timeout. Probe time and tokens do not enter benchmark scores or
+task totals. Measurements are persisted and reused when resuming.
+
+**Agent session timeout**:
+The deadline for a complete Pi or OpenCode session, across tool calls. With
+calibration enabled it is computed from a configurable output token budget,
+measured speed, overhead and safety factor. It is not a tool iteration timeout
+or a loop detector. Manual agent timeout settings apply only with calibration
+disabled.

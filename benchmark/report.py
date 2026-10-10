@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from benchmark.calibration import CalibrationResult
 from benchmark.config import AppConfig
 from benchmark.lmstudio_meta import format_model_size
 from benchmark.scorer import BenchmarkScore, TaskScore
@@ -47,6 +48,7 @@ def write_summary(
     discovery_runs: list[Any] | None = None,
     model_size_bytes: int | None = None,
     params_string: str | None = None,
+    calibration_result: CalibrationResult | None = None,
 ) -> None:
     generated_at = datetime.now(timezone.utc).isoformat()
     total_llm_time = sum(
@@ -70,6 +72,7 @@ def write_summary(
     payload: dict[str, Any] = {
         "generated_at": generated_at,
         "generator": config.benchmark.generator,
+        "calibration": asdict(calibration_result) if calibration_result is not None else None,
         "model": config.llm.model,
         "modelLabel": model_label,
         "publisher": config.llm.publisher,
@@ -314,6 +317,7 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         f"- Reasoning tokens: `{_format_tokens(payload['llm_token_usage']['reasoning_tokens'])}`",
         _format_highest_token_task(payload["highest_token_task"]),
         "",
+        *_render_calibration_section(payload.get("calibration")),
         *_render_discovery_section(payload.get("discovery")),
         *_render_temperature_table(payload["temperature_scores"]),
         "| Task | Status | Temperature | Points | Passed | Failed | LLM time | Tokens |",
@@ -335,6 +339,23 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         )
     lines.append("")
     return "\n".join(lines)
+
+
+def _render_calibration_section(calibration: dict[str, Any] | None) -> list[str]:
+    if not calibration:
+        return []
+    return [
+        "## Speed calibration",
+        "",
+        f"- Speed per request: `{calibration['tokens_per_second']:.2f} output tokens/s` "
+        "(slowest sample, including request latency and context processing)",
+        f"- Concurrent requests: `{calibration['generation_workers']}`",
+        f"- Agent session timeout: `{calibration['timeout_seconds']}s`",
+        f"- Warmup time: `{calibration['warmup_seconds']:.2f}s`",
+        f"- Calibration time: `{calibration['calibration_seconds']:.2f}s`",
+        "- Warmup/calibration time and tokens are excluded from benchmark totals and scores.",
+        "",
+    ]
 
 
 def _render_discovery_section(discovery: dict[str, Any] | None) -> list[str]:
