@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Union
 
 from benchmark.config import (
+    SUPPORTED_GENERATORS,
     apply_cli_overrides,
     get_effective_discovery_temperatures,
     load_config,
@@ -30,7 +31,7 @@ from benchmark.generation import (
     create_solution_generator,
     opencode_metadata_to_dict,
 )
-from benchmark.llm_client import LlmUsage
+from benchmark.solution import LlmUsage
 from benchmark.lmstudio_meta import LmStudioModelMeta, resolve_model_meta
 from benchmark.report import (
     create_run_dir,
@@ -366,7 +367,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--generator",
-        choices=("llm", "opencode", "pi", "all"),
+        choices=(*SUPPORTED_GENERATORS, "all"),
         help="Solution generator to use. Defaults to benchmark.generator.",
     )
     run.add_argument(
@@ -408,7 +409,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--generation-workers",
         type=int,
         help=(
-            "Number of LLM generation requests to run in parallel per temperature. "
+            "Number of agent sessions to run in parallel per temperature. "
             "Defaults to benchmark.generation_workers (1)."
         ),
     )
@@ -725,7 +726,7 @@ def _run(args: argparse.Namespace) -> int:
 
     if config.benchmark.generator == "all":
         results = {}
-        for mode in ["llm", "opencode", "pi"]:
+        for mode in SUPPORTED_GENERATORS:
             print(f"\n{'='*40}\nRunning benchmark in mode: {mode}\n{'='*40}")
             try:
                 from dataclasses import replace as dc_replace
@@ -744,7 +745,7 @@ def _run(args: argparse.Namespace) -> int:
         print("\n" + "="*40)
         print("CONSOLIDATED SUMMARY")
         print("="*40)
-        for mode in ["llm", "opencode", "pi"]:
+        for mode in SUPPORTED_GENERATORS:
             score = results.get(mode)
             if score:
                 print(f"{mode:10}: {score.final_score} ({score.earned_points:g}/{score.available_points:g})")
@@ -1663,6 +1664,9 @@ def _read_task_result_json(path: Path) -> TaskRunResult:
     if "status" not in data:
         raise ValueError(f"{path} is missing status")
 
+    if data.get("generator") not in SUPPORTED_GENERATORS:
+        raise ValueError(f"{path} has an unsupported or missing generator")
+
     llm_usage_data = data.get("llm_usage") or {}
     if not isinstance(llm_usage_data, dict):
         llm_usage_data = {}
@@ -1687,7 +1691,7 @@ def _read_task_result_json(path: Path) -> TaskRunResult:
         extraction_warnings=_string_tuple(data.get("extraction_warnings")),
         extraction_error=_optional_text(data.get("extraction_error")),
         infrastructure_error=_optional_text(data.get("infrastructure_error")),
-        generator=str(data.get("generator") or "llm"),
+        generator=str(data["generator"]),
         opencode_metadata=(
             data.get("opencode") if isinstance(data.get("opencode"), dict) else None
         ),

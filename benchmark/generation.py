@@ -16,14 +16,9 @@ from urllib.parse import urlsplit, urlunsplit
 
 from benchmark.config import AppConfig, OpenCodeConfig, PiConfig
 from benchmark.fsafety import cache_safety_root, safe_rmtree as _safe_rmtree
-from benchmark.llm_client import (
+from benchmark.solution import (
     ExtractedCode,
-    LlmClient,
-    LlmHttpError,
-    SYSTEM_PROMPT,
-    LlmTimeoutError,
     LlmUsage,
-    RequestRateLimiter,
     extract_solution_code,
 )
 from benchmark.runner import CommandResult, decode_output
@@ -98,7 +93,7 @@ class GeneratedSolution:
     extracted: ExtractedCode
     llm_response_time_seconds: float
     llm_usage: LlmUsage
-    generator: str = "llm"
+    generator: str = "opencode"
     opencode_metadata: OpenCodeRunMetadata | None = None
     pi_metadata: PiRunMetadata | None = None
     infrastructure_error: str | None = None
@@ -109,64 +104,27 @@ class SolutionGenerator(Protocol):
         ...
 
 
-class DirectLlmGenerator:
-    def __init__(self, config: AppConfig):
-        self._client = LlmClient(config.llm)
-
-    def generate(self, task: Task, task_dir: Path) -> GeneratedSolution:
-        prompt = task.prompt
-        (task_dir / "prompt.md").write_text(prompt, encoding="utf-8")
-
-        try:
-            llm_response = self._client.complete(prompt)
-        except LlmTimeoutError as exc:
-            (task_dir / "generation-error.log").write_text(
-                str(exc) + "\n", encoding="utf-8"
-            )
-            return GeneratedSolution(
-                extracted=ExtractedCode(code=None, warnings=(), error=str(exc)),
-                llm_response_time_seconds=exc.response_time_seconds,
-                llm_usage=LlmUsage(),
-                generator="llm",
-            )
-        except LlmHttpError as exc:
-            if exc.status_code != 400:
-                raise
-            (task_dir / "generation-error.log").write_text(
-                f"LLM HTTP error {exc.status_code}: {exc.details}\n",
-                encoding="utf-8",
-            )
-            return GeneratedSolution(
-                extracted=ExtractedCode(
-                    code=None,
-                    warnings=(),
-                    error=(
-                        f"LLM HTTP error {exc.status_code} during generation. "
-                        "See generation-error.log."
-                    ),
-                ),
-                llm_response_time_seconds=exc.response_time_seconds,
-                llm_usage=LlmUsage(),
-                generator="llm",
-            )
-
-        (task_dir / "response.md").write_text(llm_response.content, encoding="utf-8")
-        required_public_class = task.solution_class if task.difficulty == "easy" else None
-        extracted = extract_solution_code(
-            llm_response.content,
-            required_public_class=required_public_class,
+class RequestRateLimiter:
+    def __init__(self, requests_per_minute: int | None):
+        self._minimum_interval_seconds = (
+            60.0 / requests_per_minute if requests_per_minute else 0.0
         )
-        if extracted.code is not None:
-            generated_path = task_dir / task.generated_file
-            generated_path.parent.mkdir(parents=True, exist_ok=True)
-            generated_path.write_text(extracted.code, encoding="utf-8")
+        self._next_request_at = 0.0
+        self._lock = threading.Lock()
 
-        return GeneratedSolution(
-            extracted=extracted,
-            llm_response_time_seconds=llm_response.response_time_seconds,
-            llm_usage=llm_response.usage,
-            generator="llm",
-        )
+    def wait(self) -> None:
+        if self._minimum_interval_seconds <= 0:
+            return
+
+        with self._lock:
+            now = time.monotonic()
+            wait_seconds = max(0.0, self._next_request_at - now)
+            self._next_request_at = (
+                max(now, self._next_request_at) + self._minimum_interval_seconds
+            )
+
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
 
 
 class OpenCodeGenerator:
@@ -459,7 +417,6 @@ class OpenCodeGenerator:
         extracted = extract_solution_code(
             code,
             required_public_class=required_public_class,
-            preserve_unfenced_code=True,
         )
         warnings = list(extracted.warnings)
         if run.exit_code != 0:
@@ -990,7 +947,7 @@ def create_solution_generator(config: AppConfig) -> SolutionGenerator:
         return PiGenerator(config)
     if config.benchmark.generator == "opencode":
         return OpenCodeGenerator(config)
-    return DirectLlmGenerator(config)
+    raise ValueError(f"Unsupported solution generator: {config.benchmark.generator}")
 
 
 class PiGenerator:
@@ -1265,7 +1222,7 @@ class PiGenerator:
     def _build_user_prompt(self, task: Task) -> str:
         sections = [
             "You are generating a C# source file in a project workspace.",
-            f"Follow these solution rules:\n{_opencode_solution_rules()}\n- The main public class must be named `{task.solution_class}`.",
+            f"Follow these solution rules:\n{_solution_rules()}\n- The main public class must be named `{task.solution_class}`.",
             "Task:\n" + _task_contract(task),
             _workspace_summary(task),
             _pi_workspace_generation_instructions(task),
@@ -1411,7 +1368,6 @@ class PiGenerator:
         extracted = extract_solution_code(
             code,
             required_public_class=required_public_class,
-            preserve_unfenced_code=True,
         )
         warnings = list(extracted.warnings)
         if run.exit_code != 0:
@@ -1729,11 +1685,16 @@ def _workspace_boundary() -> str:
     )
 
 
-def _opencode_solution_rules() -> str:
-    return SYSTEM_PROMPT.replace(
-        "Return exactly one fenced ```csharp code block, with no text outside it.\n",
-        "",
-    ).strip()
+def _solution_rules() -> str:
+    return """Generate one complete C# source file for the provided project.
+The code will be compiled with the .NET 8 SDK, but prefer conservative, broadly supported C# and standard BCL APIs.
+Do not use preview features or .NET-version-specific APIs unless the task explicitly requires them.
+Do not declare a C# namespace; top-level using directives are allowed.
+Use only the .NET SDK/BCL and package references already present in the task project; do not add or require extra third-party or NuGet packages.
+Declare public types required by the task contract at the top level unless the task explicitly requires nesting.
+Do not wrap required public classes, records, or interfaces inside an unrelated placeholder or helper class.
+Do not include comments, explanations, greetings, or pleasantries.
+Follow the task contract exactly."""
 
 
 def _task_contract(task: Task) -> str:
@@ -1765,7 +1726,7 @@ def _workspace_generation_instructions(task: Task) -> str:
 def _agent_prompt(task: Task, config: OpenCodeConfig) -> str:
     sections = [
         "You are generating a C# source file in a project workspace.",
-        "Follow these solution rules:\n" + _opencode_solution_rules(),
+        "Follow these solution rules:\n" + _solution_rules(),
         "Task:\n" + _task_contract(task),
         _workspace_summary(task),
         _workspace_generation_instructions(task),

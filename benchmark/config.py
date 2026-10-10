@@ -8,6 +8,7 @@ from typing import Any
 from benchmark.simple_yaml import load_yaml
 
 
+SUPPORTED_GENERATORS = ("opencode", "pi")
 DEFAULT_TEMPERATURES = (0.2, 0.40, 0.60, 0.80)
 
 
@@ -32,8 +33,6 @@ class LlmConfig:
     min_p: float | None = None
     top_k: int | None = None
     repetition_penalty: float | None = None
-    seed: int = 42
-    timeout_seconds: int = 120
     requests_per_minute: int | None = None
     context_limit: int | None = None
     discovery: DiscoveryConfig = field(default_factory=DiscoveryConfig)
@@ -51,7 +50,7 @@ class BenchmarkConfig:
     task_id: str | None = None
     generation_workers: int = 1
     evaluation_workers: int = 1
-    generator: str = "llm"
+    generator: str = "opencode"
 
 
 @dataclass(frozen=True)
@@ -177,10 +176,6 @@ def load_config(path: Path | None) -> AppConfig:
             repetition_penalty=_optional_positive_float(
                 llm_data.get("repetition_penalty"),
                 "llm.repetition_penalty",
-            ),
-            seed=int(llm_data.get("seed", LlmConfig.seed)),
-            timeout_seconds=int(
-                llm_data.get("timeout_seconds", LlmConfig.timeout_seconds)
             ),
             requests_per_minute=_optional_positive_int(
                 llm_data.get("requests_per_minute"),
@@ -456,8 +451,6 @@ def apply_cli_overrides(
                 if repetition_penalty is not None
                 else config.llm.repetition_penalty
             ),
-            seed=config.llm.seed,
-            timeout_seconds=config.llm.timeout_seconds,
             requests_per_minute=config.llm.requests_per_minute,
             context_limit=(
                 _positive_int(context_limit, "llm.context_limit")
@@ -646,19 +639,19 @@ def _positive_float(value: Any, name: str) -> float:
 
 def _generator_value(value: Any, name: str) -> str:
     text = str(value).strip().lower()
-    if text not in {"llm", "opencode", "pi", "all"}:
-        raise ValueError(f"{name} must be 'llm', 'opencode', 'pi', or 'all'")
+    if text not in (*SUPPORTED_GENERATORS, "all"):
+        raise ValueError(f"{name} must be 'opencode', 'pi', or 'all'")
     return text
 
 
 def _validate_config(config: AppConfig) -> None:
-    if config.benchmark.generator == "opencode" and not config.opencode.version:
+    if config.benchmark.generator in {"opencode", "all"} and not config.opencode.version:
         raise ValueError(
-            "opencode.version is required when benchmark.generator is 'opencode'"
+            "opencode.version is required when benchmark.generator is 'opencode' or 'all'"
         )
-    if config.benchmark.generator == "pi" and not config.pi.version:
+    if config.benchmark.generator in {"pi", "all"} and not config.pi.version:
         raise ValueError(
-            "pi.version is required when benchmark.generator is 'pi'"
+            "pi.version is required when benchmark.generator is 'pi' or 'all'"
         )
     _validate_output_dir(config.benchmark.output_dir)
 

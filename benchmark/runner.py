@@ -14,7 +14,7 @@ from typing import Any
 
 from benchmark.config import DockerConfig
 from benchmark.fsafety import safe_rmtree as _safe_rmtree
-from benchmark.llm_client import ExtractedCode, LlmUsage
+from benchmark.solution import ExtractedCode, LlmUsage
 from benchmark.tasks import Task
 
 
@@ -45,7 +45,7 @@ class TaskRunResult:
     extraction_warnings: tuple[str, ...]
     extraction_error: str | None = None
     infrastructure_error: str | None = None
-    generator: str = "llm"
+    generator: str = "opencode"
     opencode_metadata: dict[str, Any] | None = None
     pi_metadata: dict[str, Any] | None = None
     temperature: float | None = None
@@ -73,7 +73,7 @@ class DockerRunner:
         artifact_dir: Path,
         llm_response_time_seconds: float,
         llm_usage: LlmUsage,
-        generator: str = "llm",
+        generator: str = "opencode",
         opencode_metadata: dict[str, Any] | None = None,
         pi_metadata: dict[str, Any] | None = None,
         temperature: float | None = None,
@@ -569,7 +569,7 @@ class DockerRunner:
         *,
         llm_response_time_seconds: float,
         llm_usage: LlmUsage,
-        generator: str = "llm",
+        generator: str = "opencode",
         opencode_metadata: dict[str, Any] | None = None,
         pi_metadata: dict[str, Any] | None = None,
         temperature: float | None = None,

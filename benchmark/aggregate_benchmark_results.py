@@ -56,9 +56,6 @@ class BenchmarkResult:
     available_points: float | None
 
 
-_GENERATOR_KEY = {"opencode": "OpenCode", "pi": "Pi"}
-
-
 @dataclass(frozen=True)
 class GroupedResult:
     model: str
@@ -67,16 +64,15 @@ class GroupedResult:
     kv_cache_quantization: str | None
     model_size_bytes: int | None
     context_limit: int
-    score_llm: float | None
     score_pi: float | None
     score_opencode: float | None
 
     def avg_score(self) -> float | None:
-        scores = [s for s in (self.score_llm, self.score_pi, self.score_opencode) if s is not None]
+        scores = [s for s in (self.score_pi, self.score_opencode) if s is not None]
         return sum(scores) / len(scores) if scores else None
 
     def max_score(self) -> float | None:
-        scores = [s for s in (self.score_llm, self.score_pi, self.score_opencode) if s is not None]
+        scores = [s for s in (self.score_pi, self.score_opencode) if s is not None]
         return max(scores) if scores else None
 
     def score_per_gb(self) -> float | None:
@@ -96,7 +92,7 @@ def group_results(results: list[BenchmarkResult]) -> list[GroupedResult]:
     groups: dict[tuple[str, ...], list[BenchmarkResult]] = {}
 
     for r in results:
-        gen_label = _GENERATOR_KEY.get(r.generator.lower(), "LLM")
+        gen_label = normalize_generator(r.generator)
         kv_cache_key = r.kv_cache_quantization or ""
         key = (r.model, r.publisher, r.quantization, kv_cache_key, r.context_limit)
         groups.setdefault(key, []).append((gen_label, r))
@@ -124,7 +120,6 @@ def group_results(results: list[BenchmarkResult]) -> list[GroupedResult]:
             kv_cache_quantization=None if not kv_cache_key else kv_cache_key,
             model_size_bytes=model_size_bytes,
             context_limit=context_limit,
-            score_llm=score_map.get("LLM"),
             score_pi=score_map.get("Pi"),
             score_opencode=score_map.get("OpenCode"),
         ))
@@ -515,8 +510,8 @@ def render_markdown(
         f"- Results directory: `{results_dir}`",
         f"- Configuration groups: `{len(grouped_results)}`",
         "",
-        "| Rank | Model | Publisher | Quantization | KV Cache | Model Size | Context Size | SCORE LLM | SCORE PI | SCORE OPENCODE | Avg Score | Max Score |",
-        "| ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Rank | Model | Publisher | Quantization | KV Cache | Model Size | Context Size | SCORE PI | SCORE OPENCODE | Avg Score | Max Score |",
+        "| ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
 
     for rank, g in enumerate(grouped_results, start=1):
@@ -528,7 +523,6 @@ def render_markdown(
             f"| {markdown_code(g.kv_cache_quantization or 'n/a')} "
             f"| `{format_model_size(g.model_size_bytes)}` "
             f"| `{g.context_limit}` "
-            f"| {_format_grouped_score(g.score_llm)} "
             f"| {_format_grouped_score(g.score_pi)} "
             f"| {_format_grouped_score(g.score_opencode)} "
             f"| {_format_grouped_score(g.avg_score())} "
@@ -547,7 +541,6 @@ def render_html_row_grouped(rank: int, g: GroupedResult) -> str:
     search_text = " ".join([
         str(rank), g.model, g.publisher or "", g.quantization or "",
         g.kv_cache_quantization or "", model_size_text, str(g.context_limit),
-        _format_grouped_score(g.score_llm),
         _format_grouped_score(g.score_pi),
         _format_grouped_score(g.score_opencode),
         _format_grouped_score(avg),
@@ -563,7 +556,6 @@ def render_html_row_grouped(rank: int, g: GroupedResult) -> str:
         f'data-kv-cache-quant="{escape_attr(g.kv_cache_quantization or "")}" '
         f'data-model-size="{number_attr(g.model_size_bytes)}" '
         f'data-context-limit="{g.context_limit}" '
-        f'data-score-llm="{number_attr(g.score_llm)}" '
         f'data-score-pi="{number_attr(g.score_pi)}" '
         f'data-score-opencode="{number_attr(g.score_opencode)}" '
         f'data-avg-score="{number_attr(avg)}" '
@@ -577,7 +569,6 @@ def render_html_row_grouped(rank: int, g: GroupedResult) -> str:
         f'<td>{escape_html(g.kv_cache_quantization or "n/a")}</td>'
         f'<td class="numeric">{escape_html(model_size_text)}</td>'
         f'<td class="numeric">{g.context_limit}</td>'
-        f'<td class="numeric" data-extreme-key="scoreLlm">{_format_grouped_score(g.score_llm)}</td>'
         f'<td class="numeric" data-extreme-key="scorePi">{_format_grouped_score(g.score_pi)}</td>'
         f'<td class="numeric" data-extreme-key="scoreOpencode">{_format_grouped_score(g.score_opencode)}</td>'
         f'<td class="numeric" data-extreme-key="avgScore">{_format_grouped_score(avg)}</td>'
@@ -1310,7 +1301,6 @@ def render_html(
                 <th data-key="kvCacheQuant" data-type="text">KV Cache</th>
                 <th class="numeric" data-key="modelSize" data-type="number">Model Size</th>
                 <th class="numeric" data-key="contextLimit" data-type="number">Context Size</th>
-                <th class="numeric" data-key="scoreLlm" data-type="number">Score LLM</th>
                 <th class="numeric" data-key="scorePi" data-type="number">Score Pi</th>
                 <th class="numeric" data-key="scoreOpencode" data-type="number">Score OpenCode</th>
                 <th class="numeric" data-key="avgScore" data-type="number">Avg Score</th>
@@ -1463,7 +1453,6 @@ def render_html(
       const extremeRules = [
         {{ key: "avgScore", best: "max" }},
         {{ key: "maxScore", best: "max" }},
-        {{ key: "scoreLlm", best: "max" }},
         {{ key: "scorePi", best: "max" }},
         {{ key: "scoreOpencode", best: "max" }},
         {{ key: "scorePerGb", best: "max" }},
@@ -1731,12 +1720,12 @@ def infer_quantization(run_name: str) -> str | None:
 
 
 def normalize_generator(value: Any) -> str:
-    text = str(value or "llm").strip().lower()
+    text = str(value).strip().lower()
     if text == "opencode":
         return "OpenCode"
     if text == "pi":
         return "Pi"
-    return "LLM"
+    raise ValueError(f"Unsupported solution generator: {value}")
 
 
 def sum_optional_numbers(values: Iterable[Any]) -> float | None:

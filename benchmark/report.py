@@ -18,8 +18,9 @@ def create_run_dir(
     model_label: str,
     quantization: str,
     kv_cache_quantization: str | None = None,
-    generator_mode: str = "LLM",
+    generator_mode: str = "opencode",
 ) -> Path:
+    generator_mode = _format_generator(generator_mode)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     parts: list[str] = [
         timestamp,
@@ -91,8 +92,6 @@ def write_summary(
             "min_p": config.llm.min_p,
             "top_k": config.llm.top_k,
             "repetition_penalty": config.llm.repetition_penalty,
-            "seed": config.llm.seed,
-            "timeout_seconds": config.llm.timeout_seconds,
             "requests_per_minute": config.llm.requests_per_minute,
             "context_limit": config.llm.context_limit,
         },
@@ -484,9 +483,9 @@ def _format_temperature_list(temperatures: Any) -> str:
 
 
 def _format_generator(generator: Any) -> str:
-    text = str(generator or "llm").lower()
+    text = str(generator).strip().lower()
     if text == "opencode":
         return "OpenCode"
     if text == "pi":
         return "Pi"
-    return "LLM"
+    raise ValueError(f"Unsupported solution generator: {generator}")

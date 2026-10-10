@@ -1,6 +1,6 @@
 # Add Pi as an agentic generator mode
 
-Pi (the pi coding harness) is added as a third generator mode alongside `llm` and `opencode`. It runs inside the shared Docker agentic image (`csharp-llm-benchmark-agentic`) using `pi --mode json "prompt"` to produce events as JSONL on stdout. The agent writes solution files via built-in tools (`write`, `edit`).
+Pi (the pi coding harness) is supported alongside `opencode` as an agentic generator. The supported generators are now OpenCode and Pi. It runs inside the shared Docker agentic image (`csharp-llm-benchmark-agentic`) using `pi --mode json "prompt"` to produce events as JSONL on stdout. The agent writes solution files via built-in tools (`write`, `edit`).
 
 ## Considered Options
 

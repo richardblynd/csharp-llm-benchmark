@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from benchmark.llm_client import LlmUsage
+from benchmark.solution import LlmUsage
 from benchmark.runner import TaskRunResult
 from benchmark.tasks import Task
 
@@ -20,7 +20,7 @@ class TaskScore:
     earned_test_points: float
     passed_tests: tuple[str, ...]
     failed_tests: tuple[str, ...]
-    generator: str = "llm"
+    generator: str = "opencode"
     opencode_metadata: dict[str, Any] | None = None
     temperature: float | None = None
 
