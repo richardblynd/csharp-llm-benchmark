@@ -497,8 +497,8 @@ class DockerRunner:
         if completed.returncode != 0:
             return CommandResult(
                 exit_code=completed.returncode,
-                stdout=_decode_output(completed.stdout),
-                stderr=_decode_output(completed.stderr),
+                stdout=decode_output(completed.stdout),
+                stderr=decode_output(completed.stderr),
             )
 
         try:
@@ -542,14 +542,14 @@ class DockerRunner:
             )
             return CommandResult(
                 exit_code=completed.returncode,
-                stdout=_decode_output(completed.stdout),
-                stderr=_decode_output(completed.stderr),
+                stdout=decode_output(completed.stdout),
+                stderr=decode_output(completed.stderr),
             )
         except subprocess.TimeoutExpired as exc:
             return CommandResult(
                 exit_code=124,
-                stdout=_decode_output(exc.stdout),
-                stderr=_decode_output(exc.stderr),
+                stdout=decode_output(exc.stdout),
+                stderr=decode_output(exc.stderr),
                 timed_out=True,
             )
         except OSError as exc:
@@ -669,7 +669,7 @@ def _normalize_test_name(test_name: str) -> str:
     return short_name.strip()
 
 
-def _decode_output(output: str | bytes | None) -> str:
+def decode_output(output: str | bytes | None) -> str:
     if output is None:
         return ""
     if isinstance(output, bytes):

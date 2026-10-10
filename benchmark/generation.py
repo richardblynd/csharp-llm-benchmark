@@ -26,7 +26,7 @@ from benchmark.llm_client import (
     RequestRateLimiter,
     extract_solution_code,
 )
-from benchmark.runner import CommandResult
+from benchmark.runner import CommandResult, decode_output
 from benchmark.tasks import Task
 
 
@@ -976,8 +976,8 @@ def _run_docker_command(
                 )
         return CommandResult(
             exit_code=124,
-            stdout=_decode_output(exc.stdout),
-            stderr=_decode_output(exc.stderr),
+            stdout=decode_output(exc.stdout),
+            stderr=decode_output(exc.stderr),
             timed_out=True,
             container_name=container_name if keep_on_timeout else None,
         )
@@ -1705,14 +1705,6 @@ def _last_non_empty_line(text: str) -> str | None:
         if line:
             return line
     return None
-
-
-def _decode_output(output: str | bytes | None) -> str:
-    if output is None:
-        return ""
-    if isinstance(output, bytes):
-        return output.decode("utf-8", errors="replace")
-    return output
 
 
 def _public_files_list(task: Task) -> str:
