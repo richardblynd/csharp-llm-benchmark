@@ -142,9 +142,31 @@ provider, for example LM Studio, applies its own defaults.
 
 ### Speed calibration and agent timeouts
 
-Before discovery or task generation, the runner warms up the model with
-`generation_workers` simultaneous requests, waits for all of them to finish,
-then measures three rounds at the same concurrency. Warmup measurements are
+By default, the runner uses `benchmark.generation_workers` (or
+`--generation-workers`) directly for speed calibration, temperature discovery
+and task generation. Set it to at most the concurrent predictions configured
+in LM Studio. The runner does not change or automatically read that server setting.
+
+Concurrency search is **optional and disabled by default**. Enable it with
+`benchmark.calibration.concurrency_enabled: true`, or for a single run:
+
+```bash
+python -m benchmark.cli run --config config.yaml --concurrency-calibration-enabled true
+```
+
+When enabled, the runner treats `generation_workers` as the search ceiling
+and tests 2, 3, 4, ... up to this ceiling before speed and timeout calibration,
+warming up each candidate and measuring `benchmark.calibration.rounds` rounds.
+Each round sums the requests' output tokens/s; the mean across rounds determines
+the candidate's throughput. The candidate with the highest throughput becomes
+the effective `generation_workers` for temperature discovery and task generation.
+Ties choose the smaller concurrency. All candidates are tested, even after a
+drop, to avoid missing a later peak. A ceiling of 1 keeps sequential execution
+and skips the concurrency search.
+
+With either the configured or selected concurrency, the runner warms up the model with that many
+simultaneous requests, waits for all of them to finish,
+then measures three rounds at the selected concurrency. Warmup measurements are
 discarded when choosing the speed. The slowest measured request sets the common
 session timeout for both Pi and OpenCode:
 
@@ -167,27 +189,32 @@ includes request latency, prompt processing and any reasoning tokens counted by
 the provider. It is not aggregate server throughput or pure decoding speed.
 These short prompts do not reproduce the growing context of an entire agent
 session; the configurable overhead and safety factor provide headroom.
-Configure the server to accept the same number of concurrent predictions as
-`generation_workers`; CLI overrides are applied before calibration.
+CLI overrides are applied before calibration. Disabling the optional concurrency
+search keeps speed and timeout calibration enabled at the configured worker count.
 
 The probes are unscored OpenAI-compatible streaming requests to the configured
 model and endpoint. The endpoint must support `stream_options.include_usage`.
-Their tokens and time are saved separately in `calibration.json` and in the
+Concurrency trials, selected workers, tokens and time are saved separately in `calibration.json` and in the
 summary, and excluded from task totals and scores. `request_timeout_seconds`
 (default 600) guards each probe; if calibration fails, the run stops with a
 diagnostic instead of silently using a fixed agent timeout. When running
-`--generator all`, both agents share one calibration.
+`--generator all`, both agents share one concurrency selection and speed calibration.
 
 The consolidated HTML and Markdown reports show **Speed Pi (tok/s)** and
 **Speed OpenCode (tok/s)** from the same runs that supplied the displayed scores.
 Hover over an HTML speed to see its concurrency and session timeout. Older runs
 without calibration show `n/a`.
 
-Resuming a calibrated run reuses its saved measurements and timeout. The model,
-endpoint, concurrency, sampling parameters and calibration settings must match.
+Resuming a calibrated run reuses its saved worker selection, measurements and
+timeout without new probes. The model, endpoint, configured worker count (or
+search ceiling), sampling parameters and speed calibration settings must match.
+The optional search switch applies only to new runs; resume keeps the saved
+selection even when that switch is disabled. Calibrations saved
+before concurrency selection existed retain their original fixed worker count.
 For runs created before calibration existed, resume with
 `--calibration-enabled false`. This option also disables calibration for new
-runs, which then use `pi.timeout_seconds` and `opencode.timeout_seconds`:
+runs, which then use the configured fixed `generation_workers`,
+`pi.timeout_seconds` and `opencode.timeout_seconds`:
 
 ```bash
 python -m benchmark.cli run --config config.yaml --calibration-enabled false

@@ -46,6 +46,7 @@ class LlmConfig:
 @dataclass(frozen=True)
 class CalibrationConfig:
     enabled: bool = True
+    concurrency_enabled: bool = False
     warmup_tokens: int = 128
     sample_tokens: int = 512
     rounds: int = 3
@@ -246,6 +247,10 @@ def load_config(path: Path | None) -> AppConfig:
                 enabled=_bool_value(
                     calibration_data.get("enabled", CalibrationConfig.enabled),
                     "benchmark.calibration.enabled",
+                ),
+                concurrency_enabled=_bool_value(
+                    calibration_data.get("concurrency_enabled", CalibrationConfig.concurrency_enabled),
+                    "benchmark.calibration.concurrency_enabled",
                 ),
                 **{
                     key: _positive_int(
@@ -459,6 +464,7 @@ def apply_cli_overrides(
     context_limit: int | None = None,
     discovery_enabled: bool | None = None,
     calibration_enabled: bool | None = None,
+    concurrency_calibration_enabled: bool | None = None,
 ) -> AppConfig:
     updated = AppConfig(
         llm=LlmConfig(
@@ -521,6 +527,11 @@ def apply_cli_overrides(
                     calibration_enabled
                     if calibration_enabled is not None
                     else config.benchmark.calibration.enabled
+                ),
+                concurrency_enabled=(
+                    concurrency_calibration_enabled
+                    if concurrency_calibration_enabled is not None
+                    else config.benchmark.calibration.concurrency_enabled
                 ),
             ),
             difficulty=(

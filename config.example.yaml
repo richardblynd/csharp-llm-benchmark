@@ -46,14 +46,16 @@ benchmark:
   difficulty: "all"
   output_dir: "results"
   max_attempts_per_task: 1
-  # Number of agent sessions to run in parallel per temperature.
-  # Increase when your API endpoint supports concurrent requests without
-  # throttling. Default: 1 (sequential).
+  # Number of parallel agent sessions; speed/timeout calibration uses this count.
+  # With concurrency_enabled: true, this becomes the search ceiling instead.
+  # Set it to at most LM Studio's Max Concurrent Predictions. 1 stays sequential.
   generation_workers: 1
-  # Unscored speed calibration before discovery/generation. Warmup and each
-  # measured round send generation_workers simultaneous requests.
+  # Unscored speed/timeout calibration at the configured worker count.
   calibration:
     enabled: true
+    # Optional search over 2, 3, ... generation_workers for the best summed tokens/s.
+    # Each candidate uses the warmup and round settings below. Default: false.
+    concurrency_enabled: false
     warmup_tokens: 128
     sample_tokens: 512
     rounds: 3

@@ -1,4 +1,4 @@
-"""Unscored inference probes that calibrate agent session deadlines under load."""
+"""Unscored probes that select concurrency and calibrate session deadlines."""
 from __future__ import annotations
 
 import json
@@ -26,6 +26,23 @@ class ProbeMeasurement:
 
 
 @dataclass(frozen=True)
+class ConcurrencyTrial:
+    generation_workers: int
+    warmup_samples: tuple[ProbeMeasurement, ...]
+    rounds: tuple[tuple[ProbeMeasurement, ...], ...]
+    tokens_per_second: float
+
+
+@dataclass(frozen=True)
+class ConcurrencyCalibrationResult:
+    max_generation_workers: int
+    generation_workers: int
+    tokens_per_second: float
+    calibration_seconds: float
+    trials: tuple[ConcurrencyTrial, ...]
+
+
+@dataclass(frozen=True)
 class CalibrationResult:
     measured_at: str
     model: str
@@ -39,6 +56,7 @@ class CalibrationResult:
     samples: tuple[ProbeMeasurement, ...]
     tokens_per_second: float
     timeout_seconds: int
+    concurrency_calibration: ConcurrencyCalibrationResult | None = None
 
 
 def _sampling(config: AppConfig) -> dict[str, Any]:
@@ -144,7 +162,53 @@ def _round(config: AppConfig, tokens: int) -> tuple[ProbeMeasurement, ...]:
         return tuple(future.result() for future in futures)
 
 
+def calibrate_concurrency(config: AppConfig) -> ConcurrencyCalibrationResult | None:
+    maximum = config.benchmark.generation_workers
+    if maximum == 1:
+        return None
+    settings = config.benchmark.calibration
+    trials = []
+    started = time.perf_counter()
+    print(f"Concurrency calibration: testing 2 through {maximum} concurrent requests", flush=True)
+    for workers in range(2, maximum + 1):
+        candidate = replace(config, benchmark=replace(config.benchmark, generation_workers=workers))
+        print(f"Concurrency warmup: {workers} concurrent requests", flush=True)
+        warmup = _round(candidate, settings.warmup_tokens)
+        rounds = []
+        for index in range(settings.rounds):
+            print(
+                f"Concurrency calibration: {workers} requests, round {index + 1}/{settings.rounds}",
+                flush=True,
+            )
+            rounds.append(_round(candidate, settings.sample_tokens))
+        # Compare the mean of the summed request rates across measured rounds.
+        # Warmups are excluded and ties retain the smaller worker count.
+        throughput = math.fsum(
+            math.fsum(sample.tokens_per_second for sample in samples) for samples in rounds
+        ) / len(rounds)
+        comparison = f"; previous: {trials[-1].tokens_per_second:.2f}" if trials else ""
+        print(f"Concurrency {workers}: {throughput:.2f} summed output tokens/s{comparison}", flush=True)
+        trials.append(ConcurrencyTrial(workers, warmup, tuple(rounds), throughput))
+    best = max(trials, key=lambda trial: trial.tokens_per_second)
+    print(
+        f"Selected generation_workers: {best.generation_workers}/{maximum} "
+        f"({best.tokens_per_second:.2f} summed output tokens/s)",
+        flush=True,
+    )
+    return ConcurrencyCalibrationResult(
+        maximum, best.generation_workers, best.tokens_per_second,
+        time.perf_counter() - started, tuple(trials),
+    )
+
+
 def calibrate(config: AppConfig) -> CalibrationResult:
+    concurrency = (
+        calibrate_concurrency(config) if config.benchmark.calibration.concurrency_enabled else None
+    )
+    if concurrency is not None:
+        config = replace(config, benchmark=replace(
+            config.benchmark, generation_workers=concurrency.generation_workers,
+        ))
     settings = config.benchmark.calibration
     workers = config.benchmark.generation_workers
     print(f"Warmup: {workers} concurrent requests, up to {settings.warmup_tokens} output tokens each", flush=True)
@@ -163,13 +227,14 @@ def calibrate(config: AppConfig) -> CalibrationResult:
     return CalibrationResult(
         datetime.now(timezone.utc).isoformat(), config.llm.model, config.llm.base_url,
         workers, asdict(settings), _sampling(config), warmup_seconds, calibration_seconds,
-        warmup, tuple(samples), speed, timeout,
+        warmup, tuple(samples), speed, timeout, concurrency,
     )
 
 
 def apply_calibration(config: AppConfig, result: CalibrationResult) -> AppConfig:
     return replace(
         config,
+        benchmark=replace(config.benchmark, generation_workers=result.generation_workers),
         pi=replace(config.pi, timeout_seconds=result.timeout_seconds),
         opencode=replace(config.opencode, timeout_seconds=result.timeout_seconds),
     )
@@ -190,16 +255,51 @@ def load_calibration(run_dir: Path, config: AppConfig) -> CalibrationResult:
             "existing methodology with --calibration-enabled false."
         )
     payload = json.loads(path.read_text(encoding="utf-8"))
+    concurrency = payload.get("concurrency_calibration")
+    configured_workers = (
+        concurrency["max_generation_workers"] if concurrency else payload.get("generation_workers")
+    )
+    if configured_workers != config.benchmark.generation_workers:
+        raise ValueError("Saved calibration generation_workers differs from this configuration; start a new run")
+    # This switch controls new probes only. Resume preserves the saved selection,
+    # including runs created before the search became optional.
+    saved_settings = payload.get("settings")
+    expected_settings = asdict(config.benchmark.calibration)
+    expected_settings.pop("concurrency_enabled")
+    if not isinstance(saved_settings, dict) or {
+        key: value for key, value in saved_settings.items() if key != "concurrency_enabled"
+    } != expected_settings:
+        raise ValueError("Saved calibration settings differs from this configuration; start a new run")
     for key, expected in (
         ("model", config.llm.model), ("base_url", config.llm.base_url),
-        ("generation_workers", config.benchmark.generation_workers),
-        ("settings", asdict(config.benchmark.calibration)), ("sampling", _sampling(config)),
+        ("sampling", _sampling(config)),
     ):
         if payload.get(key) != expected:
             raise ValueError(f"Saved calibration {key} differs from this configuration; start a new run")
     payload["warmup_samples"] = tuple(ProbeMeasurement(**s) for s in payload["warmup_samples"])
     payload["samples"] = tuple(ProbeMeasurement(**s) for s in payload["samples"])
+    if concurrency:
+        concurrency["trials"] = tuple(
+            ConcurrencyTrial(
+                trial["generation_workers"],
+                tuple(ProbeMeasurement(**s) for s in trial["warmup_samples"]),
+                tuple(tuple(ProbeMeasurement(**s) for s in samples) for samples in trial["rounds"]),
+                trial["tokens_per_second"],
+            )
+            for trial in concurrency["trials"]
+        )
+        payload["concurrency_calibration"] = ConcurrencyCalibrationResult(**concurrency)
     result = CalibrationResult(**payload)
+    if result.concurrency_calibration is not None:
+        concurrency_result = result.concurrency_calibration
+        if (
+            not concurrency_result.trials
+            or concurrency_result.generation_workers != result.generation_workers
+            or not 2 <= result.generation_workers <= concurrency_result.max_generation_workers
+            or max(concurrency_result.trials, key=lambda trial: trial.tokens_per_second).generation_workers
+            != result.generation_workers
+        ):
+            raise ValueError("Saved calibration concurrency selection is inconsistent")
     if result.timeout_seconds != calculate_timeout(result.tokens_per_second, config.benchmark.calibration):
         raise ValueError("Saved calibration timeout is inconsistent with its speed and settings")
     return result

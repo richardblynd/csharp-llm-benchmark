@@ -37,10 +37,22 @@ _Avoid_: Task description, task spec
 
 **Speed calibration**:
 Unscored streaming inference requests made before agent execution. After a
-parallel warmup, measured rounds run with `generation_workers` concurrent
+parallel warmup, measured rounds run with configured (or optionally selected)
+`generation_workers` concurrent
 requests. The slowest request's output tokens per elapsed second sets a common
 agent session timeout. Probe time and tokens do not enter benchmark scores or
 task totals. Measurements are persisted and reused when resuming.
+
+**Concurrency calibration**:
+Optional unscored inference probes run before speed calibration, enabled with
+`benchmark.calibration.concurrency_enabled` (default false). Normally the
+configured `generation_workers` is used directly. With search enabled, the configured
+`generation_workers` is a ceiling matching LM Studio's Max Concurrent Predictions.
+Candidates start at 2 and increase by 1 through the ceiling. Each candidate is
+warmed up, then measured over several rounds; the mean of the summed request
+token rates selects the effective worker count. Ties favor fewer workers. A
+ceiling of 1 skips selection. Discovery and both generators use the winner;
+resume reuses the saved selection regardless of the search switch.
 
 **Agent session timeout**:
 The deadline for a complete Pi or OpenCode session, across tool calls. With

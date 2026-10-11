@@ -416,7 +416,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--generation-workers",
         type=int,
         help=(
-            "Number of agent sessions to run in parallel per temperature. "
+            "Number of parallel agent sessions. When concurrency calibration is enabled, "
+            "this is the search ceiling and the best measured value is used. "
             "Defaults to benchmark.generation_workers (1)."
         ),
     )
@@ -432,7 +433,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--calibration-enabled",
         choices=("true", "false"),
         default=None,
-        help="Enable warmup and parallel speed calibration for automatic agent timeouts.",
+        help="Enable warmup and speed calibration for automatic agent timeouts.",
+    )
+    run.add_argument(
+        "--concurrency-calibration-enabled",
+        choices=("true", "false"),
+        default=None,
+        help=(
+            "Optionally search for the best concurrency before speed calibration. "
+            "Defaults to false; requires calibration to be enabled."
+        ),
     )
     run.add_argument(
         "--discovery-enabled",
@@ -499,7 +509,10 @@ def _execute_benchmark(
     if config.benchmark.calibration.enabled:
         if args.resume is not None:
             calibration_result = load_calibration(run_dir, config)
-            print(f"Reusing calibrated speed: {calibration_result.tokens_per_second:.2f} tokens/s")
+            print(
+                f"Reusing calibrated speed: {calibration_result.tokens_per_second:.2f} tokens/s; "
+                f"generation_workers: {calibration_result.generation_workers}"
+            )
         elif calibration_result is None:
             calibration_result = calibrate(config)
         config = apply_calibration(config, calibration_result)
@@ -735,6 +748,11 @@ def _run(args: argparse.Namespace) -> int:
             if args.calibration_enabled is not None
             else None
         ),
+        concurrency_calibration_enabled=(
+            args.concurrency_calibration_enabled == "true"
+            if args.concurrency_calibration_enabled is not None
+            else None
+        ),
     )
     if args.resume is None and args.resume_dir is not None:
         raise ValueError("--resume-dir requires --resume")
@@ -756,7 +774,7 @@ def _run(args: argparse.Namespace) -> int:
     _report_quantization_precedence(config.llm.quantization, model_meta)
 
     # Calibrate once for a new run, after all CLI overrides. Both generators
-    # receive the same measured speed and deadline when selecting "all".
+    # receive the same selected concurrency, speed and deadline with "all".
     calibration_result = (
         calibrate(config)
         if config.benchmark.calibration.enabled and args.resume is None

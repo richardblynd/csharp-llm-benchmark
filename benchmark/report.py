@@ -345,7 +345,26 @@ def _render_markdown(payload: dict[str, Any]) -> str:
 def _render_calibration_section(calibration: dict[str, Any] | None) -> list[str]:
     if not calibration:
         return []
-    return [
+    lines = []
+    concurrency = calibration.get("concurrency_calibration")
+    if concurrency:
+        lines.extend([
+            "## Concurrency calibration",
+            "",
+            f"- Maximum concurrent predictions configured: `{concurrency['max_generation_workers']}`",
+            f"- Selected generation workers: `{concurrency['generation_workers']}`",
+            f"- Best summed throughput: `{concurrency['tokens_per_second']:.2f} output tokens/s`",
+            f"- Concurrency calibration time: `{concurrency['calibration_seconds']:.2f}s`",
+            "",
+            "| Concurrent requests | Summed output tokens/s (mean across rounds) |",
+            "| --- | --- |",
+            *[
+                f"| {trial['generation_workers']} | {trial['tokens_per_second']:.2f} |"
+                for trial in concurrency["trials"]
+            ],
+            "",
+        ])
+    return lines + [
         "## Speed calibration",
         "",
         f"- Speed per request: `{calibration['tokens_per_second']:.2f} output tokens/s` "
@@ -354,7 +373,7 @@ def _render_calibration_section(calibration: dict[str, Any] | None) -> list[str]
         f"- Agent session timeout: `{calibration['timeout_seconds']}s`",
         f"- Warmup time: `{calibration['warmup_seconds']:.2f}s`",
         f"- Calibration time: `{calibration['calibration_seconds']:.2f}s`",
-        "- Warmup/calibration time and tokens are excluded from benchmark totals and scores.",
+        "- Concurrency probes, warmup and speed calibration are excluded from benchmark totals and scores.",
         "",
     ]
 
