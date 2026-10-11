@@ -16,13 +16,14 @@ class LmStudioModelMeta:
 
     All fields are optional: a failed/absent lookup yields an empty meta so
     callers can proceed without special-casing errors. Quantization may fall
-    back to config; publisher is sourced exclusively from the API.
+    back to config; publisher and display name are sourced from the API.
     """
 
     size_bytes: int | None = None
     quantization: str | None = None
     params_string: str | None = None
     publisher: str | None = None
+    display_name: str | None = None
 
 
 def derive_base_root(base_url: str) -> str:
@@ -227,11 +228,15 @@ def parse_model_meta(entry: dict[str, Any]) -> LmStudioModelMeta:
         if entry.get("params_string")
         else None
     )
+    display_name = entry.get("display_name")
     return LmStudioModelMeta(
         size_bytes=size_bytes,
         quantization=quantization_name,
         params_string=params_string,
         publisher=format_publisher(entry.get("publisher")),
+        display_name=(
+            display_name.strip() or None if isinstance(display_name, str) else None
+        ),
     )
 
 

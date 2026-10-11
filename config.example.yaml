@@ -2,8 +2,7 @@ llm:
   base_url: "http://localhost:1234/v1"
   api_key: "lm-studio"
   model: "local-model-name"
-  modelLabel: "local-model-label"
-  # Publisher é autodetectado via GET /api/v1/models.
+  # Nome de exibição (display_name) e publisher são autodetectados via GET /api/v1/models.
   # Opcional. Contra um server local do LM Studio, tamanho e quantização são
   # autodetectados via GET /api/v1/models e sobrepõem este valor (um aviso é
   # emitido se divergir). Mantenha preenchido apenas para providers cloud ou

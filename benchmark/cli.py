@@ -330,7 +330,6 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--base-url")
     run.add_argument("--api-key")
     run.add_argument("--model")
-    run.add_argument("--model-label")
     run.add_argument(
         "--top-p",
         type=float,
@@ -481,12 +480,13 @@ def _execute_benchmark(
     model_meta: LmStudioModelMeta | None = None,
     calibration_result: CalibrationResult | None = None,
 ) -> BenchmarkScore:
-    # Publisher comes exclusively from the API. Apply metadata before discovery,
+    # Publisher and display name come from the API. Apply metadata before discovery,
     # task logging and summary generation so every result uses the same values.
     config = replace(
         config,
         llm=replace(
             config.llm,
+            model_label=model_meta.display_name if model_meta is not None else None,
             publisher=model_meta.publisher if model_meta is not None else None,
             quantization=(
                 model_meta.quantization
@@ -731,7 +731,6 @@ def _run(args: argparse.Namespace) -> int:
         base_url=args.base_url,
         api_key=args.api_key,
         model=args.model,
-        model_label=args.model_label,
         difficulty=args.difficulty,
         output_dir=args.output_dir,
         task_id=args.task_id,
@@ -774,7 +773,6 @@ def _run(args: argparse.Namespace) -> int:
         base_url=config.llm.base_url,
         api_key=config.llm.api_key,
         model=config.llm.model,
-        model_label=config.llm.effective_model_label,
     )
     _report_quantization_precedence(config.llm.quantization, model_meta)
 
