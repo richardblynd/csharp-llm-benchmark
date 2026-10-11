@@ -331,7 +331,6 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--api-key")
     run.add_argument("--model")
     run.add_argument("--model-label")
-    run.add_argument("--publisher")
     run.add_argument(
         "--top-p",
         type=float,
@@ -482,13 +481,20 @@ def _execute_benchmark(
     model_meta: LmStudioModelMeta | None = None,
     calibration_result: CalibrationResult | None = None,
 ) -> BenchmarkScore:
-    if model_meta is not None and model_meta.quantization:
-        # API value wins over the yaml one (see resolve_model_meta in _run);
-        # apply it before run-dir naming so folders match reality.
-        config = replace(
-            config,
-            llm=replace(config.llm, quantization=model_meta.quantization),
-        )
+    # Publisher comes exclusively from the API. Apply metadata before discovery,
+    # task logging and summary generation so every result uses the same values.
+    config = replace(
+        config,
+        llm=replace(
+            config.llm,
+            publisher=model_meta.publisher if model_meta is not None else None,
+            quantization=(
+                model_meta.quantization
+                if model_meta is not None and model_meta.quantization
+                else config.llm.quantization
+            ),
+        ),
+    )
 
     resume_from_index = 0
     if args.resume is not None:
@@ -726,7 +732,6 @@ def _run(args: argparse.Namespace) -> int:
         api_key=args.api_key,
         model=args.model,
         model_label=args.model_label,
-        publisher=args.publisher,
         difficulty=args.difficulty,
         output_dir=args.output_dir,
         task_id=args.task_id,

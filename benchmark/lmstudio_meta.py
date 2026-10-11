@@ -15,12 +15,14 @@ class LmStudioModelMeta:
     """Metadata for one model, sourced from the LM Studio local API.
 
     All fields are optional: a failed/absent lookup yields an empty meta so
-    callers can fall back to config values without special-casing errors.
+    callers can proceed without special-casing errors. Quantization may fall
+    back to config; publisher is sourced exclusively from the API.
     """
 
     size_bytes: int | None = None
     quantization: str | None = None
     params_string: str | None = None
+    publisher: str | None = None
 
 
 def derive_base_root(base_url: str) -> str:
@@ -91,7 +93,7 @@ def fetch_models(
     except (TimeoutError, socket.timeout):
         print(
             f"Warning: LM Studio metadata request timed out after "
-            f"{timeout_seconds}s ({url}). Continuing without model size/quantization.",
+            f"{timeout_seconds}s ({url}). Continuing without model metadata.",
             file=sys.stderr,
         )
         return []
@@ -111,7 +113,7 @@ def fetch_models(
     except (urllib.error.URLError, OSError) as exc:
         print(
             f"Warning: could not reach LM Studio metadata endpoint at {url} "
-            f"({exc}). Continuing without model size/quantization.",
+            f"({exc}). Continuing without model metadata.",
             file=sys.stderr,
         )
         return []
@@ -199,7 +201,7 @@ def resolve_model_meta(
         print(
             "Warning: LM Studio listed models but none matched the configured "
             f"model ({model!r}/{model_label!r}). Available keys: {available}. "
-            "Continuing without model size/quantization.",
+            "Continuing without model metadata.",
             file=sys.stderr,
         )
         return LmStudioModelMeta()
@@ -229,7 +231,20 @@ def parse_model_meta(entry: dict[str, Any]) -> LmStudioModelMeta:
         size_bytes=size_bytes,
         quantization=quantization_name,
         params_string=params_string,
+        publisher=format_publisher(entry.get("publisher")),
     )
+
+
+def format_publisher(publisher: Any) -> str | None:
+    """Render the API publisher for logs and results."""
+    if not isinstance(publisher, str) or not publisher.strip():
+        return None
+    publisher = publisher.strip()
+    aliases = {
+        "lmstudio-community": "LM Studio Community",
+        "prism-ml": "Prism ML",
+    }
+    return aliases.get(publisher.casefold(), publisher[0].upper() + publisher[1:])
 
 
 def format_model_size(size_bytes: int | None) -> str:

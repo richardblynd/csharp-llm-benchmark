@@ -14,7 +14,7 @@ cp config.example.yaml config.yaml
 ```
 
 2. Edit `config.yaml` with your LM Studio endpoint, API model, display model
-   label, optional publisher label and quantization label.
+   label and quantization label. Publisher is detected from the LM Studio API.
 
 3. Build the .NET evaluation and shared agentic images:
 
@@ -400,23 +400,26 @@ llm:
   requests_per_minute: 3
 ```
 
-Set the API model, display model label, optional publisher label and quantization
+Set the API model, display model label and quantization
 label in `config.yaml`.
 `model` is sent to the API, while `modelLabel` is used in result folder names
 and aggregate ranking tables. `publisher` is shown as a separate aggregate table
-column. If `modelLabel` is omitted, the model name is used:
+column and comes exclusively from the LM Studio API; `llm.publisher` in older
+configs is ignored. If `modelLabel` is omitted, the model name is used:
 
 ```yaml
 llm:
   model: "qwen3.5-4b@q4_k_m"
   modelLabel: "qwen3.5-4b"
-  publisher: "Alibaba"
   quantization: "Q4_K_M"
 ```
 
 When running against a local LM Studio server, the benchmark queries its
 `GET /api/v1/models` endpoint once at startup and records the model size
-(shown in the aggregate **Model Size** column) and parameter count. The API's
+(shown in the aggregate **Model Size** column), parameter count and publisher.
+Publisher names have their first letter capitalized, with `lmstudio-community`
+rendered as `LM Studio Community` and `prism-ml` as `Prism ML`. If the API lookup
+or publisher is unavailable, reports show `n/a` for publisher. The API's
 quantization also overrides `llm.quantization`. The yaml value is only used as
 a fallback for cloud providers or when the server/model cannot be matched:
 

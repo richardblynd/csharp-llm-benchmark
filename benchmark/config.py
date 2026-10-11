@@ -158,7 +158,6 @@ def load_config(path: Path | None) -> AppConfig:
     model_label = _optional_string(
         llm_data.get("modelLabel", llm_data.get("model_label"))
     )
-    publisher = _optional_string(llm_data.get("publisher"))
     temperatures = _temperature_tuple(llm_data)
 
     discovery_data = llm_data.get("discovery", {})
@@ -171,7 +170,6 @@ def load_config(path: Path | None) -> AppConfig:
             api_key=api_key,
             model=model,
             model_label=model_label,
-            publisher=publisher,
             quantization=(
                 _optional_string(llm_data.get("quantization"))
                 or LlmConfig.quantization
@@ -446,7 +444,6 @@ def apply_cli_overrides(
     api_key: str | None = None,
     model: str | None = None,
     model_label: str | None = None,
-    publisher: str | None = None,
     difficulty: str | None = None,
     output_dir: str | None = None,
     task_id: str | None = None,
@@ -476,11 +473,7 @@ def apply_cli_overrides(
                 if model_label is not None
                 else config.llm.model_label
             ),
-            publisher=(
-                _optional_string(publisher)
-                if publisher is not None
-                else config.llm.publisher
-            ),
+            publisher=config.llm.publisher,
             quantization=config.llm.quantization,
             kv_cache_quantization=config.llm.kv_cache_quantization,
             temperature=config.llm.temperature,
