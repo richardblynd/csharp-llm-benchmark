@@ -420,9 +420,32 @@ When running against a local LM Studio server, the benchmark queries its
 and publisher.
 Publisher names have their first letter capitalized, with `lmstudio-community`
 rendered as `LM Studio Community` and `prism-ml` as `Prism ML`. If the API lookup
-or publisher is unavailable, reports show `n/a` for publisher. The API's
-quantization also overrides `llm.quantization`. The yaml value is only used as
-a fallback for cloud providers or when the server/model cannot be matched:
+or publisher is unavailable, reports show `n/a` for publisher.
+
+For a server on the same machine (including its LAN address), the benchmark
+also uses `lms server status --json` and `lms ps --json`, when `lms` is on PATH.
+It checks the server host and port and matches the loaded instance identifier
+to `llm.model`. The instance's quantization and file size take priority over
+catalog metadata; this handles a generic ID such as `google/gemma-4-12b`
+running Q6_K while the catalog advertises Q4_K_M.
+
+For catalog entries with multiple `variants`, neither `quantization` nor
+`selected_variant` proves which variant is loaded. If the loaded instance
+cannot be resolved (for example, a LAN server or missing CLI), a warning
+is emitted. Before calibration or generation, the terminal asks for the
+loaded model's quantization and file size in GB. This also applies when local
+model metadata is unavailable or incomplete; only missing fields are requested.
+The YAML quantization is not used as a fallback for local models.
+
+The size accepts a decimal point or comma and uses the reports' convention
+(1 GB = 1024^3 bytes). Blank/unknown quantization and nonpositive or nonfinite
+sizes are rejected. Answers are requested once and shared by both generators,
+then saved in the reports. If input is unavailable, the run stops before
+calibration or generation instead of recording uncertain metadata.
+
+Unambiguous metadata is still detected automatically. Cloud providers continue
+to use the YAML quantization. Existing reports are not automatically relabeled.
+The size backfill below skips ambiguous catalog entries:
 
 ```bash
 # Backfill model_size_bytes/params_string into older runs (dry-run first):

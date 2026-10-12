@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import shutil
 import sys
 import traceback
@@ -39,7 +40,7 @@ from benchmark.generation import (
     opencode_metadata_to_dict,
 )
 from benchmark.solution import LlmUsage
-from benchmark.lmstudio_meta import LmStudioModelMeta, resolve_model_meta
+from benchmark.lmstudio_meta import LmStudioModelMeta, is_local_server, resolve_model_meta
 from benchmark.report import (
     create_run_dir,
     find_highest_token_task,
@@ -700,12 +701,46 @@ def _execute_benchmark(
 _QUANTIZATION_PLACEHOLDERS = {"", "unknown", "not-specified"}
 
 
+def _prompt_missing_model_metadata(
+    meta: LmStudioModelMeta, model: str,
+) -> LmStudioModelMeta:
+    """Complete local model metadata once, before calibration or generation."""
+    quantization = meta.quantization
+    size_bytes = meta.size_bytes
+    if quantization is not None and size_bytes is not None:
+        return meta
+
+    print(f"Could not determine all metadata for {model!r}. Enter the loaded model's details.")
+    try:
+        while quantization is None:
+            value = input("Loaded model quantization (e.g. Q6_K): ").strip()
+            if value.casefold() in _QUANTIZATION_PLACEHOLDERS:
+                print("Enter the actual quantization; this field is required.")
+                continue
+            quantization = value
+        while size_bytes is None:
+            value = input("Model file size in GB (1024^3 bytes, as in reports; e.g. 9.1): ").strip()
+            try:
+                byte_count = float(value.replace(",", ".")) * 2**30
+                if not math.isfinite(byte_count) or byte_count < 1:
+                    raise ValueError
+                size_bytes = round(byte_count)
+            except ValueError:
+                print("Enter a positive, finite size in GB (decimal point or comma).")
+    except (EOFError, OSError) as exc:
+        raise RuntimeError(
+            "Model metadata is required. Run in a terminal and enter the loaded "
+            "model's quantization and file size in GB."
+        ) from exc
+    return replace(meta, quantization=quantization, size_bytes=size_bytes)
+
+
 def _report_quantization_precedence(
     configured: str, meta: LmStudioModelMeta
 ) -> None:
     """Warn when an explicit yaml quantization conflicts with LM Studio metadata.
 
-    The API value wins; yaml placeholders ('unknown', 'not-specified') are
+    The detected value wins; yaml placeholders ('unknown', 'not-specified') are
     treated as unset and never trigger a warning.
     """
     if meta.quantization is None:
@@ -715,7 +750,7 @@ def _report_quantization_precedence(
     if configured != meta.quantization:
         print(
             f"Warning: configured quantization ({configured}) differs from the "
-            f"LM Studio metadata ({meta.quantization}); using the API value.",
+            f"LM Studio metadata ({meta.quantization}); using the detected value.",
             file=sys.stderr,
         )
 
@@ -775,6 +810,8 @@ def _run(args: argparse.Namespace) -> int:
         model=config.llm.model,
     )
     _report_quantization_precedence(config.llm.quantization, model_meta)
+    if is_local_server(config.llm.base_url):
+        model_meta = _prompt_missing_model_metadata(model_meta, config.llm.model)
 
     # Calibrate once for a new run, after all CLI overrides. Both generators
     # receive the same selected concurrency, speed and deadline with "all".

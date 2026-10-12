@@ -3,10 +3,12 @@ llm:
   api_key: "lm-studio"
   model: "local-model-name"
   # Nome de exibição (display_name) e publisher são autodetectados via GET /api/v1/models.
-  # Opcional. Contra um server local do LM Studio, tamanho e quantização são
-  # autodetectados via GET /api/v1/models e sobrepõem este valor (um aviso é
-  # emitido se divergir). Mantenha preenchido apenas para providers cloud ou
-  # overrides explícitos.
+  # Opcional. Na mesma máquina, lms ps --json identifica a variante carregada
+  # (lms deve estar no PATH; host e porta são conferidos). Esses dados têm prioridade.
+  # Sem a instância, /api/v1/models só fornece tamanho/quantização se não houver
+  # múltiplas variantes. Se faltar quantização ou tamanho, o terminal pergunta
+  # os valores antes do benchmark (tamanho em GB, como nos relatórios: 1024^3 bytes).
+  # O valor abaixo é usado apenas para providers cloud; não é fallback local.
   quantization: "not-specified"
   # Quantização do KV cache. Omitir ou usar null se não se aplica (ex: GPT cloud).
   # kv_cache_quantization: "Q4"

@@ -397,7 +397,7 @@ class CalibrationIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             config = replace(config, benchmark=replace(config.benchmark, output_dir=Path(directory)))
             with patch("benchmark.cli.load_config", return_value=config), patch(
-                "benchmark.cli.resolve_model_meta", return_value=cli.LmStudioModelMeta()
+                "benchmark.cli.resolve_model_meta", return_value=cli.LmStudioModelMeta(quantization="Q6_K", size_bytes=9000)
             ), patch(
                 "benchmark.cli.load_tasks", return_value=[]
             ), patch("benchmark.cli.validate_tasks", return_value=[]), patch("benchmark.cli._report_quantization_precedence"), patch(

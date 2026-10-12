@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import ipaddress
 import json
+import shutil
 import socket
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -15,8 +18,8 @@ class LmStudioModelMeta:
     """Metadata for one model, sourced from the LM Studio local API.
 
     All fields are optional: a failed/absent lookup yields an empty meta so
-    callers can proceed without special-casing errors. Quantization may fall
-    back to config; publisher and display name are sourced from the API.
+    callers can proceed without special-casing errors. The benchmark CLI asks
+    for missing quantization/size; publisher and display name come from the API.
     """
 
     size_bytes: int | None = None
@@ -111,7 +114,7 @@ def fetch_models(
             file=sys.stderr,
         )
         return []
-    except (urllib.error.URLError, OSError) as exc:
+    except (urllib.error.URLError, OSError, ValueError) as exc:
         print(
             f"Warning: could not reach LM Studio metadata endpoint at {url} "
             f"({exc}). Continuing without model metadata.",
@@ -130,6 +133,59 @@ def fetch_models(
     return [entry for entry in models if isinstance(entry, dict)]
 
 
+def _is_same_machine(hostname: str) -> bool:
+    """Only let the local CLI supply metadata for this machine's server."""
+    try:
+        addresses = {info[4][0] for info in socket.getaddrinfo(hostname, None)}
+        local_addresses = {
+            info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None)
+        }
+        return bool(addresses) and all(
+            ipaddress.ip_address(address).is_loopback or address in local_addresses
+            for address in addresses
+        )
+    except (OSError, ValueError):
+        return False
+
+
+def fetch_loaded_models(base_url: str) -> list[dict[str, Any]]:
+    """Read actual loaded instances using the optional local LM Studio CLI.
+
+    Catalog REST endpoints can report the default variant even when another
+    variant is loaded. Verify host and HTTP port before using local CLI data;
+    never substitute this machine's models for a different server's models.
+    """
+    root = urlparse(derive_base_root(base_url))
+    if root.scheme != "http" or root.path or not _is_same_machine(root.hostname or ""):
+        return []
+    executable = shutil.which("lms")
+    if executable is None:
+        return []
+    try:
+        def query(*args: str) -> Any:
+            result = subprocess.run(
+                [executable, *args], capture_output=True, text=True,
+                encoding="utf-8", timeout=10, check=True,
+            )
+            return json.loads(result.stdout)
+
+        status = query("server", "status", "--json")
+        if (
+            not isinstance(status, dict) or status.get("running") is not True
+            or status.get("port") != (root.port or 80)
+        ):
+            return []
+        loaded = query("ps", "--json")
+        if isinstance(loaded, list):
+            return [entry for entry in loaded if isinstance(entry, dict)]
+    except (OSError, subprocess.SubprocessError, ValueError):
+        print(
+            "Warning: could not query loaded LM Studio instances with lms; "
+            "only unambiguous catalog metadata will be used.", file=sys.stderr,
+        )
+    return []
+
+
 def match_model(
     models: list[dict[str, Any]],
     model: str | None = None,
@@ -137,17 +193,30 @@ def match_model(
 ) -> dict[str, Any] | None:
     """Find the library entry for a model by key or display name.
 
-    Matching order per candidate identity: exact `key`, casefolded `key`,
-    casefolded `display_name`. Candidates are tried in this order:
-    `model` first (the API id), then `model_label` (user-facing label).
+    Try loaded instance ID, exact key/variant and casefolded key for each
+    candidate, then casefolded display names. Candidates are tried in this
+    order: `model` (the API id), then `model_label` (user-facing label).
     """
     candidates = [value for value in (model, model_label) if value]
     for candidate in candidates:
+        by_instance = next(
+            (entry for entry in models
+             if any(instance.get("id") == candidate
+                    for instance in (entry.get("loaded_instances") or [])
+                    if isinstance(instance, dict))), None,
+        )
+        if by_instance is not None:
+            return by_instance
         exact_key = next(
             (entry for entry in models if entry.get("key") == candidate), None
         )
         if exact_key is not None:
             return exact_key
+        by_variant = next(
+            (entry for entry in models if candidate in (entry.get("variants") or [])), None
+        )
+        if by_variant is not None:
+            return by_variant
         folded = candidate.strip().casefold()
         by_key = next(
             (
@@ -183,20 +252,40 @@ def resolve_model_meta(
     model: str | None = None,
     model_label: str | None = None,
 ) -> LmStudioModelMeta:
-    """Fetch library metadata and resolve it for one configured model.
+    """Resolve instance metadata, with an unambiguous library fallback.
 
     Never raises; returns an empty meta (plus a stderr warning when the
     server was reachable but no entry matched) so benchmark runs proceed
-    with config fallbacks either way.
+    and the CLI can ask for missing quantization and size.
     """
     if not is_local_server(base_url):
         return LmStudioModelMeta()
 
     models = fetch_models(derive_base_root(base_url), api_key=api_key)
+    loaded_models = fetch_loaded_models(base_url)
+    matches = [entry for entry in loaded_models if model and entry.get("identifier") == model]
+    if not matches:
+        matches = [entry for entry in loaded_models if model and entry.get("modelKey") == model]
+    loaded = matches[0] if len(matches) == 1 else None
+    entry = match_model(models, model=model, model_label=model_label)
+    if loaded is not None:
+        if entry is None:
+            entry = match_model(models, model=loaded.get("modelKey"))
+        # Identity fields may come from the catalog; variant fields must come
+        # exclusively from the matched running instance, including when absent.
+        resolved = dict(entry or {})
+        resolved.pop("variants", None)
+        resolved.update({
+            "quantization": loaded.get("quantization"),
+            "size_bytes": loaded.get("sizeBytes"),
+        })
+        for source, target in (("displayName", "display_name"),
+                               ("publisher", "publisher"), ("paramsString", "params_string")):
+            if loaded.get(source):
+                resolved[target] = loaded[source]
+        return parse_model_meta(resolved)
     if not models:
         return LmStudioModelMeta()
-
-    entry = match_model(models, model=model, model_label=model_label)
     if entry is None:
         available = ", ".join(str(entry.get("key")) for entry in models[:10]) or "(none)"
         print(
@@ -207,11 +296,17 @@ def resolve_model_meta(
         )
         return LmStudioModelMeta()
 
+    if len(entry.get("variants") or []) > 1:
+        print(
+            f"Warning: LM Studio model {model!r} has multiple variants, but its "
+            "loaded instance could not be identified. Ignoring catalog quantization "
+            "and size.", file=sys.stderr,
+        )
     return parse_model_meta(entry)
 
 
 def parse_model_meta(entry: dict[str, Any]) -> LmStudioModelMeta:
-    """Normalize metadata from one LM Studio model entry."""
+    """Normalize metadata, withholding variant fields for grouped catalog entries."""
     quantization = entry.get("quantization")
     quantization_name = (
         str(quantization["name"]).strip() or None
@@ -229,6 +324,9 @@ def parse_model_meta(entry: dict[str, Any]) -> LmStudioModelMeta:
         else None
     )
     display_name = entry.get("display_name")
+    if len(entry.get("variants") or []) > 1:
+        quantization_name = None
+        size_bytes = None
     return LmStudioModelMeta(
         size_bytes=size_bytes,
         quantization=quantization_name,
