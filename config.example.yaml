@@ -16,7 +16,8 @@ llm:
     - 0.2
     - 0.4
     - 0.6
-  # Temperature discovery: run a small sample of tasks (7 fixed) at N candidate
+  # Temperature discovery per suite/agent: 7 greenfield tasks or 4 independent
+  # evolution tasks at N candidate
   # temperatures, select the winner, then run the full benchmark only at that
   # temperature. Skips when disabled or when --task-id targets a single task.
   discovery:
@@ -40,8 +41,10 @@ llm:
   # context_limit: 131072
 
 benchmark:
+  # "greenfield", "evolution", or "all" (both suites, required for combined score).
+  suite: "all"
   # Solution generator: "opencode", "pi", or "all" (both agents).
-  generator: "opencode"
+  generator: "all"
   # Optional: choose "easy", "medium", "hard" or "all".
   # Omit or use "all" to run every difficulty.
   difficulty: "all"

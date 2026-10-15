@@ -20,6 +20,7 @@ from benchmark.calibration import (
     load_calibration,
     save_calibration,
 )
+from benchmark.campaign import Campaign, campaign_protocol, write_json
 from benchmark.config import (
     SUPPORTED_GENERATORS,
     apply_cli_overrides,
@@ -39,9 +40,10 @@ from benchmark.generation import (
     create_solution_generator,
     opencode_metadata_to_dict,
 )
-from benchmark.solution import LlmUsage
+from benchmark.solution import ExtractedCode, LlmUsage
 from benchmark.lmstudio_meta import LmStudioModelMeta, is_local_server, resolve_model_meta
 from benchmark.report import (
+    _discovery_payload,
     create_run_dir,
     find_highest_token_task,
     format_duration_hms,
@@ -50,7 +52,8 @@ from benchmark.report import (
 )
 from benchmark.runner import DockerRunner, TaskRunResult, write_result_json
 from benchmark.scorer import BenchmarkScore, TaskScore, score_benchmark, score_task
-from benchmark.tasks import DISCOVERY_TASK_IDS, Task, load_tasks, select_discovery_tasks, validate_tasks
+from benchmark.tasks import DISCOVERY_TASK_IDS, SUPPORTED_SUITES, Task, load_tasks, select_discovery_tasks, validate_tasks
+from benchmark.workspace import capture_project, copy_public_files, task_fingerprint
 
 
 RUNNING_ICON = "⏳"
@@ -145,11 +148,10 @@ def _render_dashboard_table(
     terminal_width: int,
 ) -> list[str]:
     columns = [
-        ("Task", [_dashboard_task_label(row) for row in rows], 6, 18, "left"),
-        ("Name", [row.task.name for row in rows], 12, 34, "left"),
-        ("LLM", [row.llm for row in rows], 14, 32, "left"),
+        ("Task", [_dashboard_task_label(row) for row in rows], 16, 18, "left"),
+        ("LLM", [row.llm for row in rows], 10, 32, "left"),
         ("Tokens", [row.tokens for row in rows], 16, 20, "right"),
-        ("Evaluation", [row.evaluation for row in rows], 26, 48, "left"),
+        ("Evaluation", [row.evaluation for row in rows], 24, 48, "left"),
     ]
     widths = _fit_table_widths(
         [
@@ -178,7 +180,6 @@ def _render_dashboard_table(
             _format_table_row(
                 [
                     _dashboard_task_label(row),
-                    row.task.name,
                     row.llm,
                     row.tokens,
                     row.evaluation,
@@ -192,9 +193,12 @@ def _render_dashboard_table(
 
 
 def _dashboard_task_label(row: DashboardRow) -> str:
+    task_id = row.task.id
+    if row.task.suite == "evolution":
+        task_id = f"{row.task.difficulty}-{task_id.rsplit('-', 1)[-1]}"
     if row.temperature is None:
-        return row.task.id
-    return f"{row.task.id} @ {_format_temperature(row.temperature)}"
+        return task_id
+    return f"{task_id} @ {_format_temperature(row.temperature)}"
 
 
 def _fit_table_widths(
@@ -304,12 +308,17 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
 
     list_tasks = subparsers.add_parser("list-tasks", help="List benchmark tasks")
+    list_tasks.add_argument("--suite", choices=(*SUPPORTED_SUITES, "all"), default="greenfield")
+    list_tasks.add_argument("--role", choices=("scored", "discovery", "all"), default="scored")
     list_tasks.add_argument(
         "--difficulty",
         help="Task difficulty to list. Omit or use 'all' to list every difficulty.",
     )
 
     validate = subparsers.add_parser("validate", help="Validate task metadata")
+    validate.add_argument("--suite", choices=(*SUPPORTED_SUITES, "all"), default="greenfield")
+    validate.add_argument("--role", choices=("scored", "discovery", "all"), default="scored")
+    validate.add_argument("--execute", action="store_true", help="Evaluate evolution starters and references in Docker")
     validate.add_argument(
         "--difficulty",
         help=(
@@ -319,6 +328,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     run = subparsers.add_parser("run", help="Run the benchmark")
+    run.add_argument("--suite", choices=(*SUPPORTED_SUITES, "all"))
     run.add_argument("--config", type=Path, default=Path("config.example.yaml"))
     run.add_argument(
         "--difficulty",
@@ -395,6 +405,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Manual pi session timeout, used when calibration is disabled.",
     )
     run.add_argument("--task-id", help="Run only one task by id, e.g. easy-001")
+    run.add_argument("--resume-campaign", type=Path,
+                     help="Continue missing pairs/tasks in a campaign using its original configuration.")
     run.add_argument(
         "--resume",
         metavar="TASK_ID",
@@ -458,19 +470,23 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _list_tasks(args: argparse.Namespace) -> int:
-    for task in load_tasks(args.difficulty):
+    for task in load_tasks(args.difficulty, suite=args.suite, role=None if args.role == "all" else args.role):
         print(f"{task.id}\t{task.name}\t{task.score.available_points:g} points")
     return 0
 
 
 def _validate(args: argparse.Namespace) -> int:
-    tasks = load_tasks(args.difficulty)
+    tasks = load_tasks(args.difficulty, suite=args.suite, role=None if args.role == "all" else args.role)
     errors = validate_tasks(tasks)
     if errors:
         for error in errors:
             print(error, file=sys.stderr)
         return 1
     print(f"Validated {len(tasks)} task(s) {_format_difficulty(args.difficulty)}.")
+    if args.execute:
+        if args.suite not in {"evolution", "all"}:
+            raise ValueError("--execute currently validates evolution starters and references only")
+        return _validate_evolution_deliveries([task for task in tasks if task.suite == "evolution"])
     return 0
 
 
@@ -480,6 +496,8 @@ def _execute_benchmark(
     args: argparse.Namespace,
     model_meta: LmStudioModelMeta | None = None,
     calibration_result: CalibrationResult | None = None,
+    campaign: Campaign | None = None,
+    discovery_tasks: list[Task] | None = None,
 ) -> BenchmarkScore:
     # Publisher and display name come from the API. Apply metadata before discovery,
     # task logging and summary generation so every result uses the same values.
@@ -498,7 +516,11 @@ def _execute_benchmark(
     )
 
     resume_from_index = 0
-    if args.resume is not None:
+    resuming = args.resume is not None or (campaign is not None and campaign.resumed)
+    if campaign is not None:
+        run_dir = campaign.run_dir(config.benchmark.suite, config.benchmark.generator)
+        (run_dir / "tasks").mkdir(parents=True, exist_ok=True)
+    elif args.resume is not None:
         resume_from_index = _find_task_index(tasks, args.resume)
         run_dir = _resolve_resume_run_dir(
             config.benchmark.output_dir,
@@ -511,10 +533,11 @@ def _execute_benchmark(
             quantization=config.llm.quantization,
             kv_cache_quantization=config.llm.kv_cache_quantization,
             generator_mode=config.benchmark.generator.upper(),
+            suite=config.benchmark.suite,
         )
 
     if config.benchmark.calibration.enabled:
-        if args.resume is not None:
+        if resuming and (run_dir / "calibration.json").exists():
             calibration_result = load_calibration(run_dir, config)
             print(
                 f"Reusing calibrated speed: {calibration_result.tokens_per_second:.2f} tokens/s; "
@@ -524,15 +547,17 @@ def _execute_benchmark(
             calibration_result = calibrate(config)
         config = apply_calibration(config, calibration_result)
         save_calibration(run_dir, calibration_result)
-    elif args.resume is not None and (run_dir / "calibration.json").exists():
+    elif resuming and (run_dir / "calibration.json").exists():
         raise ValueError("Resume a calibrated run with calibration enabled and its original settings")
 
     discovery_runs: list[TemperatureRun] | None = None
     reuse_scores: dict[str, TaskScore] | None = None  # task_id → TaskScore from discovery
+    selected_temp = _read_selected_temperature(run_dir) if resuming else None
     is_discovery = (
         config.llm.discovery.enabled
-        and args.resume is None
-        and len(config.llm.temperatures) > 1
+        and (not resuming or selected_temp is None)
+        and (len(get_effective_discovery_temperatures(config)) > 1
+             or config.llm.discovery.temperatures is not None)
         and not _is_single_task_id_targeting_non_discovery(
             tasks, config.benchmark.task_id
         )
@@ -548,8 +573,10 @@ def _execute_benchmark(
         discovery_config = with_llm_temperatures(config, discovery_temps)
 
         try:
-            discovery_tasks = select_discovery_tasks(tasks)
+            discovery_tasks = discovery_tasks if discovery_tasks is not None else _discovery_tasks(config, tasks)
         except RuntimeError as exc:
+            if config.benchmark.suite == "evolution":
+                raise ValueError(f"Evolution discovery is incomplete: {exc}") from exc
             print(f"Skipping discovery: {exc}", file=sys.stderr)
             is_discovery = False
         else:
@@ -565,7 +592,7 @@ def _execute_benchmark(
                 discovery_tasks,
                 run_dir=run_dir / "discovery",
                 resume_from_index=0,
-                resume_task_id=None,
+                resume_task_id=discovery_tasks[0].id if resuming and discovery_tasks else None,
                 phase_label=phase_label,
             )
 
@@ -589,6 +616,7 @@ def _execute_benchmark(
         full_config = with_llm_temperature(config, winning_temp)
         full_config = with_llm_temperatures(config, (winning_temp,))
         # Persist the selected temperature so a later --resume can collapse to it.
+        write_json(run_dir / "discovery.json", _discovery_payload(discovery_runs))
         _persist_selected_temperature(run_dir, winning_temp)
 
         # Reuse discovery scores so we don't re-generate / re-evaluate those tasks
@@ -596,7 +624,8 @@ def _execute_benchmark(
             discovery_runs,
             winning_temp,
             run_dir / "discovery",
-        )
+        ) if config.benchmark.suite == "greenfield" else {}
+        reuse_scores = {key: value for key, value in reuse_scores.items() if key in {task.id for task in tasks}}
         skipped_count = len(reuse_scores)
         phase_label = (
             f"Phase: Full Benchmark — temperature "
@@ -606,8 +635,7 @@ def _execute_benchmark(
     else:
         full_config = config
         phase_label = None
-        if args.resume is not None and config.llm.discovery.enabled:
-            selected_temp = _read_selected_temperature(run_dir)
+        if resuming and config.llm.discovery.enabled:
             if selected_temp is None:
                 inferred_temp = _infer_selected_temperature(
                     run_dir,
@@ -622,7 +650,7 @@ def _execute_benchmark(
                 selected_temp is not None
                 and not any(
                     _same_temperature(selected_temp, temperature)
-                    for temperature in config.llm.temperatures
+                    for temperature in get_effective_discovery_temperatures(config)
                 )
             ):
                 raise ValueError(
@@ -641,7 +669,7 @@ def _execute_benchmark(
         tasks,
         run_dir=run_dir,
         resume_from_index=resume_from_index,
-        resume_task_id=args.resume,
+        resume_task_id=args.resume or (tasks[0].id if resuming else None),
         phase_label=phase_label,
         reuse_scores=reuse_scores,
     )
@@ -658,6 +686,9 @@ def _execute_benchmark(
         model_size_bytes=model_meta.size_bytes if model_meta else None,
         params_string=model_meta.params_string if model_meta else None,
         calibration_result=calibration_result,
+        evaluation=campaign.summary_metadata(config.benchmark.suite) if campaign else None,
+        discovery_payload=(json.loads((run_dir / "discovery.json").read_text(encoding="utf-8"))
+                           if (run_dir / "discovery.json").exists() else None),
     )
 
     if is_discovery and discovery_runs:
@@ -697,6 +728,12 @@ def _execute_benchmark(
                 f"({temperature_run.score.earned_points:g}/{temperature_run.score.available_points:g})"
             )
     return best_run.score
+
+
+def _discovery_tasks(config: AppConfig, tasks: list[Task]) -> list[Task]:
+    if config.benchmark.suite == "evolution":
+        return select_discovery_tasks(load_tasks(suite="evolution", role="discovery"))
+    return select_discovery_tasks(tasks)
 
 _QUANTIZATION_PLACEHOLDERS = {"", "unknown", "not-specified"}
 
@@ -763,6 +800,7 @@ def _run(args: argparse.Namespace) -> int:
     )
     config = apply_cli_overrides(
         load_config(args.config),
+        suite=args.suite,
         base_url=args.base_url,
         api_key=args.api_key,
         model=args.model,
@@ -793,16 +831,53 @@ def _run(args: argparse.Namespace) -> int:
             else None
         ),
     )
+    # Docker on WSL can invalidate cwd during a run. Anchor the shared config
+    # before calibration or the first pair, including caches for later agents.
+    config = replace(
+        config,
+        benchmark=replace(config.benchmark, output_dir=config.benchmark.output_dir.resolve()),
+        opencode=replace(config.opencode, cache_dir=config.opencode.cache_dir.resolve()),
+        pi=replace(config.pi, cache_dir=config.pi.cache_dir.resolve()),
+    )
     if args.resume is None and args.resume_dir is not None:
         raise ValueError("--resume-dir requires --resume")
+    if args.resume_campaign is not None and (args.resume is not None or args.resume_dir is not None):
+        raise ValueError("--resume-campaign cannot be combined with --resume or --resume-dir")
     if args.resume is not None and config.benchmark.task_id is not None:
         raise ValueError("--resume cannot be combined with --task-id")
+    if config.benchmark.suite == "all" and config.benchmark.task_id is not None:
+        raise ValueError("--suite all requires omitting task_id; select one suite for a single task")
+    if args.resume is not None and config.benchmark.suite == "all":
+        raise ValueError("Resume with one --suite and its matching --resume-dir")
+    if args.resume is not None and config.benchmark.suite == "evolution" and config.benchmark.generator == "all":
+        raise ValueError("Resume the evolution pilot with one --generator and its matching --resume-dir")
 
-    tasks = load_tasks(config.benchmark.difficulty)
-    tasks = _filter_tasks(tasks, config.benchmark.task_id)
-    errors = validate_tasks(tasks)
+    suites = SUPPORTED_SUITES if config.benchmark.suite == "all" else (config.benchmark.suite,)
+    tasks_by_suite = {
+        suite: _filter_tasks(load_tasks(config.benchmark.difficulty, suite=suite), config.benchmark.task_id)
+        for suite in suites
+    }
+    errors = validate_tasks([task for tasks in tasks_by_suite.values() for task in tasks])
     if errors:
         raise RuntimeError("Task validation failed:\n" + "\n".join(errors))
+    discovery_catalogs = {}
+    for suite in suites:
+        if not config.llm.discovery.enabled:
+            discovery_catalogs[suite] = []
+            continue
+        if suite == "evolution":
+            try:
+                discovery_catalogs[suite] = select_discovery_tasks(load_tasks(suite=suite, role="discovery"))
+            except RuntimeError as exc:
+                raise ValueError(f"Evolution discovery is incomplete: {exc}") from exc
+        else:
+            try:
+                discovery_catalogs[suite] = select_discovery_tasks(load_tasks(suite=suite))
+            except RuntimeError:
+                discovery_catalogs[suite] = []  # Preserve greenfield's legacy discovery fallback.
+    errors = validate_tasks([task for tasks in discovery_catalogs.values() for task in tasks])
+    if errors:
+        raise RuntimeError("Discovery task validation failed:\n" + "\n".join(errors))
 
     model_meta = resolve_model_meta(
         base_url=config.llm.base_url,
@@ -813,49 +888,103 @@ def _run(args: argparse.Namespace) -> int:
     if is_local_server(config.llm.base_url):
         model_meta = _prompt_missing_model_metadata(model_meta, config.llm.model)
 
-    # Calibrate once for a new run, after all CLI overrides. Both generators
-    # receive the same selected concurrency, speed and deadline with "all".
-    calibration_result = (
-        calibrate(config)
-        if config.benchmark.calibration.enabled and args.resume is None
-        else None
-    )
+    if isinstance(model_meta, LmStudioModelMeta):
+        config = replace(config, llm=replace(config.llm, model_label=model_meta.display_name,
+            publisher=model_meta.publisher, quantization=model_meta.quantization or config.llm.quantization))
 
-    if config.benchmark.generator == "all":
-        results = {}
-        for mode in SUPPORTED_GENERATORS:
-            print(f"\n{'='*40}\nRunning benchmark in mode: {mode}\n{'='*40}")
-            try:
-                from dataclasses import replace as dc_replace
-                # We need to update the generator in BenchmarkConfig which is inside AppConfig
-                # Since both are frozen dataclasses, we must use replace recursively
-                mode_benchmark_config = dc_replace(config.benchmark, generator=mode)
-                mode_config = dc_replace(config, benchmark=mode_benchmark_config)
-                score = _execute_benchmark(
-                    mode_config, tasks, args, model_meta=model_meta,
-                    calibration_result=calibration_result,
-                )
-                results[mode] = score
-            except Exception as exc:
-                print(f"Error during {mode} run: {exc}", file=sys.stderr)
-                results[mode] = None
+    generators = SUPPORTED_GENERATORS if config.benchmark.generator == "all" else (config.benchmark.generator,)
+    pairs = [(suite, generator) for suite in suites for generator in generators]
+    campaign = None
+    if args.resume is None and ("evolution" in suites or args.resume_campaign is not None):
+        protocol = campaign_protocol(config, tasks_by_suite, discovery_catalogs)
+        campaign = (Campaign.resume(args.resume_campaign.resolve(), protocol, pairs)
+                    if args.resume_campaign else Campaign.create(config.benchmark.output_dir, protocol, pairs,
+                        full_scope=config.benchmark.task_id is None and config.benchmark.difficulty in {None, "all"}))
+        print(f"Campaign directory: {campaign.root}")
+
+    # Calibrate once, then share the same measurements across suites and generators.
+    calibration_result = None
+    if config.benchmark.calibration.enabled and args.resume is None:
+        calibration_result = (load_calibration(campaign.root, config)
+            if campaign is not None and campaign.resumed and (campaign.root / "calibration.json").exists()
+            else calibrate(config))
+        if campaign is not None:
+            save_calibration(campaign.root, calibration_result)
+
+    if len(suites) * len(generators) > 1:
+        results: dict[tuple[str, str], BenchmarkScore | None] = {}
+        for suite in suites:
+            for generator in generators:
+                label = f"{suite} / {generator}"
+                print(f"\n{'='*40}\nRunning benchmark: {label}\n{'='*40}")
+                run_config = replace(config, benchmark=replace(config.benchmark, suite=suite, generator=generator))
+                try:
+                    if campaign is not None and campaign.completed(suite, generator):
+                        results[suite, generator] = _load_completed_pair(campaign, suite, generator, tasks_by_suite[suite])
+                        print("Reusing completed campaign pair.")
+                    else:
+                        if campaign is not None:
+                            campaign.update_pair(suite, generator, "running")
+                        results[suite, generator] = _execute_benchmark(
+                            run_config, tasks_by_suite[suite], args, model_meta=model_meta,
+                            calibration_result=calibration_result, campaign=campaign,
+                            discovery_tasks=discovery_catalogs[suite],
+                        )
+                        if campaign is not None:
+                            campaign.update_pair(suite, generator, "completed")
+                except Exception as exc:
+                    print(f"Error during {label} run: {exc}", file=sys.stderr)
+                    traceback.print_exception(exc)
+                    results[suite, generator] = None
+                    if campaign is not None:
+                        campaign.update_pair(suite, generator, "failed", str(exc))
 
         print("\n" + "="*40)
         print("CONSOLIDATED SUMMARY")
         print("="*40)
-        for mode in SUPPORTED_GENERATORS:
-            score = results.get(mode)
-            if score:
-                print(f"{mode:10}: {score.final_score} ({score.earned_points:g}/{score.available_points:g})")
+        for (suite, generator), score in results.items():
+            label = f"{suite} / {generator}"
+            if score is not None:
+                print(f"{label:24}: {score.final_score} ({score.earned_points:g}/{score.available_points:g})")
             else:
-                print(f"{mode:10}: FAILED")
+                print(f"{label:24}: FAILED")
         print("="*40)
-        return 0
+        return 1 if any(score is None for score in results.values()) else 0
 
-    _execute_benchmark(
-        config, tasks, args, model_meta=model_meta, calibration_result=calibration_result
-    )
+    suite, generator = pairs[0]
+    if campaign is not None and campaign.completed(suite, generator):
+        score = _load_completed_pair(campaign, suite, generator, tasks_by_suite[suite])
+        print(f"Reusing completed campaign pair: {score.final_score}")
+    else:
+        if campaign is not None:
+            campaign.update_pair(suite, generator, "running")
+        try:
+            _execute_benchmark(config, tasks_by_suite[suite], args, model_meta=model_meta,
+                               calibration_result=calibration_result, campaign=campaign,
+                               discovery_tasks=discovery_catalogs[suite])
+            if campaign is not None:
+                campaign.update_pair(suite, generator, "completed")
+        except BaseException as exc:
+            if campaign is not None:
+                campaign.update_pair(suite, generator, "failed", str(exc))
+            raise
     return 0
+
+
+def _load_completed_pair(campaign: Campaign, suite: str, generator: str, tasks: list[Task]) -> BenchmarkScore:
+    payload = json.loads((campaign.run_dir(suite, generator) / "summary.json").read_text(encoding="utf-8"))
+    temperature = payload["selected_temperature"]
+    root = _temperature_task_root(campaign.run_dir(suite, generator), temperature,
+                                  multi_temperature=len(payload.get("temperature_scores", [])) > 1)
+    scores = []
+    for task in tasks:
+        result = _read_task_result_json(root / "tasks" / task.id / "result.json")
+        if result.task_id != task.id or result.suite != suite or result.generator != generator:
+            raise ValueError(f"Invalid completed campaign task {task.id}")
+        if suite == "evolution" and result.task_fingerprint != task_fingerprint(task):
+            raise ValueError(f"Task fingerprint changed: {task.id}")
+        scores.append(score_task(task, result))
+    return score_benchmark(scores)
 
 
 def _build_discovery_reuse_map(
@@ -974,6 +1103,7 @@ def _run_task_major_temperatures(
                     task_index=task_index,
                     row_index=row_index,
                     expected_temperature=temperature,
+                    expected_generator=config.benchmark.generator,
                     prefix="resumed ",
                 )
                 continue
@@ -1173,7 +1303,6 @@ def _run_generation_queue(
                 try:
                     generated = gen_future.result()
                 except Exception as exc:
-                    traceback.print_exception(exc)
                     dashboard_rows[current_gen.row_index].llm = "error"
                     dashboard_rows[current_gen.row_index].evaluation = "cancelled"
                     _cancel_all_pending_work(
@@ -1182,7 +1311,7 @@ def _run_generation_queue(
                         pending,
                         dashboard_rows,
                     )
-                    dashboard.render()
+                    _report_task_exception(exc, current_gen.task_dir, dashboard)
                     raise RuntimeError(
                         f"LLM generation failed for task "
                         f"{current_gen.task.id}: {exc}"
@@ -1322,11 +1451,10 @@ def _run_prepared_agentic_queue(
                 try:
                     prepared = future.result()
                 except Exception as exc:
-                    traceback.print_exception(exc)
                     dashboard_rows[pending_gen.row_index].llm = "error"
                     dashboard_rows[pending_gen.row_index].evaluation = "cancelled"
                     error_cleanup()
-                    dashboard.render()
+                    _report_task_exception(exc, pending_gen.task_dir, dashboard)
                     raise RuntimeError(
                         f"Preparation failed for task "
                         f"{pending_gen.task.id}: {exc}"
@@ -1352,13 +1480,12 @@ def _run_prepared_agentic_queue(
                 try:
                     generated = future.result()
                 except Exception as exc:
-                    traceback.print_exception(exc)
                     dashboard_rows[ready.pending.row_index].llm = "error"
                     dashboard_rows[
                         ready.pending.row_index
                     ].evaluation = "cancelled"
                     error_cleanup()
-                    dashboard.render()
+                    _report_task_exception(exc, ready.pending.task_dir, dashboard)
                     raise RuntimeError(
                         f"LLM generation failed for task "
                         f"{ready.pending.task.id}: {exc}"
@@ -1491,6 +1618,17 @@ def _generate_solution(
     return generator.generate(task, task_dir)
 
 
+def _report_task_exception(exc: Exception, task_dir: Path, dashboard: DashboardRenderer) -> None:
+    """Keep the complete traceback visible and persist it beside task artifacts."""
+    dashboard.render()
+    diagnostic_path = task_dir / "error.log"
+    try:
+        diagnostic_path.write_text("".join(traceback.format_exception(exc)), encoding="utf-8")
+    except OSError as log_error:
+        print(f"Could not save task diagnostic to {diagnostic_path}: {log_error}", file=sys.stderr)
+    traceback.print_exception(exc)
+
+
 def _prepare_agentic_solution(
     generator: SolutionGenerator,  # OpenCodeGenerator or PiGenerator
     task: Task,
@@ -1537,6 +1675,7 @@ def _queue_evaluation(
         ),
         temperature=current_generation.temperature,
         generation_infrastructure_error=generated.infrastructure_error,
+        project_snapshot=generated.project_snapshot,
     )
     pending_evaluations[evaluation_future] = PendingEvaluation(
         row_index=current_generation.row_index,
@@ -1571,7 +1710,6 @@ def _complete_evaluations(
         try:
             result = completed_future.result()
         except Exception as exc:
-            traceback.print_exception(exc)
             dashboard_rows[pending_evaluation.row_index].evaluation = "error"
             if error_cleanup is None:
                 _cancel_all_pending_work(
@@ -1582,7 +1720,7 @@ def _complete_evaluations(
                 )
             else:
                 error_cleanup()
-            dashboard.render()
+            _report_task_exception(exc, pending_evaluation.task_dir, dashboard)
             raise RuntimeError(
                 f"Evaluation failed for task "
                 f"{pending_evaluation.task.id}: {exc}"
@@ -1649,7 +1787,7 @@ def _read_selected_temperature(run_dir: Path) -> float | None:
     except (OSError, ValueError):
         return None
     value = data.get("temperature") if isinstance(data, dict) else None
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
         return float(value)
     return None
 
@@ -1667,7 +1805,8 @@ def _infer_selected_temperature(
     usable artifacts are present.
     """
     try:
-        discovery_tasks = select_discovery_tasks(tasks)
+        discovery_tasks = (select_discovery_tasks(load_tasks(suite="evolution", role="discovery"))
+                           if tasks and getattr(tasks[0], "suite", "greenfield") == "evolution" else select_discovery_tasks(tasks))
     except RuntimeError:
         return None
 
@@ -1690,12 +1829,12 @@ def _infer_selected_temperature(
             except (OSError, ValueError):
                 continue
             scores.append(score_task(task, result))
-        if scores:
+        if len(scores) == len(discovery_tasks):
             temperature_runs.append(
                 TemperatureRun(temperature, score_benchmark(scores), scores)
             )
 
-    if not temperature_runs:
+    if not temperature_runs or len(temperature_runs) != len(discovery_temperatures):
         return None
     return _select_best_temperature_run(temperature_runs).temperature
 
@@ -1710,7 +1849,7 @@ def _select_best_temperature_run(
         key=lambda item: (
             item[1].score.earned_points,
             item[1].score.final_score,
-            -item[0],
+            -item[1].temperature,
         ),
     )[1]
 
@@ -1725,8 +1864,15 @@ def _load_existing_task_score(
     row_index: int,
     expected_temperature: float,
     prefix: str,
+    expected_generator: str | None = None,
 ) -> None:
     result = _read_task_result_json(result_path)
+    if result.suite != task.suite:
+        raise ValueError(f"{result_path} belongs to another task suite")
+    if expected_generator is not None and result.generator != expected_generator:
+        raise ValueError(f"{result_path} belongs to generator {result.generator}, expected {expected_generator}")
+    if task.suite == "evolution" and result.task_fingerprint != task_fingerprint(task):
+        raise ValueError(f"{result_path} has a different evolution task fingerprint")
     if result.task_id != task.id:
         raise ValueError(
             f"{result_path} belongs to {result.task_id}, expected {task.id}"
@@ -1796,7 +1942,43 @@ def _read_task_result_json(path: Path) -> TaskRunResult:
             data.get("opencode") if isinstance(data.get("opencode"), dict) else None
         ),
         temperature=_optional_float(data.get("temperature")),
+        pi_metadata=data.get("pi") if isinstance(data.get("pi"), dict) else None,
+        suite=str(data.get("suite", "greenfield")),
+        task_fingerprint=_optional_text(data.get("task_fingerprint")),
+        test_group_results=data.get("test_group_results"),
     )
+
+
+def _validate_evolution_deliveries(tasks: list[Task]) -> int:
+    import tempfile
+    from benchmark.config import DockerConfig
+    runner = DockerRunner(DockerConfig())
+    for task in tasks:
+        for label, source in (("starter", task.template_dir), ("reference", task.root / "reference")):
+            with tempfile.TemporaryDirectory(prefix="evolution-validation-") as directory:
+                artifact_dir = Path(directory)
+                workspace = artifact_dir / "candidate"
+                workspace.mkdir()
+                copy_public_files(task, workspace)
+                if label == "reference":
+                    if not source.is_dir():
+                        raise ValueError(f"{task.id}: missing reference directory")
+                    for path in source.rglob("*"):
+                        if path.is_file():
+                            destination = workspace / path.relative_to(source)
+                            destination.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(path, destination)
+                snapshot = capture_project(task, workspace, artifact_dir)
+                result = runner.evaluate(task, ExtractedCode(None, ()), artifact_dir=artifact_dir,
+                                         llm_response_time_seconds=0, llm_usage=LlmUsage(),
+                                         project_snapshot=snapshot)
+                score = score_task(task, result)
+                print(f"{task.id} {label}: feature={score.feature_ratio:.0%}, "
+                      f"regression={score.regression_ratio:.0%}, points={score.earned_points:g}/{score.available_points:g}")
+                expected_feature = 0 if label == "starter" else 1
+                if result.status == "infrastructure_error" or score.feature_ratio != expected_feature or score.regression_ratio != 1:
+                    raise ValueError(f"{task.id}: {label} validation failed: {result.infrastructure_error or result.status}")
+    return 0
 
 
 def _resolve_resume_run_dir(output_dir: Path, resume_dir: Path | None) -> Path:

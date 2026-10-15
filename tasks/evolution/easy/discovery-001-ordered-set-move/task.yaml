@@ -1,0 +1,43 @@
+id: evolution-discovery-easy-001
+name: "Reorder an existing ordered set"
+difficulty: easy
+suite: evolution
+role: discovery
+version: "1"
+language: csharp
+dotnet_version: "8"
+project_type: classlib
+build_project: Collections.csproj
+editable_files:
+  - "src/*.cs"
+public_files:
+  - README.md
+  - Collections.csproj
+  - src/OrderedSet.cs
+hidden_tests:
+  - feature/Feature.Tests.csproj
+  - feature/UnitTests.cs
+  - regression/Regression.Tests.csproj
+  - regression/UnitTests.cs
+build_command: "dotnet build Collections.csproj --configuration Release"
+test_groups:
+  feature:
+    build_command: "dotnet build tests/feature/Feature.Tests.csproj --configuration Release"
+    test_command: 'dotnet test tests/feature/Feature.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=feature.trx" --results-directory TestResults/feature'
+  regression:
+    build_command: "dotnet build tests/regression/Regression.Tests.csproj --configuration Release"
+    test_command: 'dotnet test tests/regression/Regression.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=regression.trx" --results-directory TestResults/regression'
+score:
+  compile: 0
+  tests:
+    moves_in_both_directions_preserve_other_order: 2
+    absent_values_leave_the_collection_unchanged: 2
+    self_and_adjacent_moves_succeed: 2
+    configured_equality_keeps_original_values: 2
+    null_default_and_snapshots_interoperate_with_moves: 2
+  regression:
+    old_add_retains_insertion_order_and_uniqueness: 1
+    old_remove_reports_presence_and_permits_readding: 1
+    old_equality_is_used_without_replacing_values: 1
+    old_null_and_default_values_are_supported: 1
+    old_snapshots_and_instances_are_independent: 1

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import math
 from pathlib import Path
 from typing import Any
 
 from benchmark.simple_yaml import load_yaml
+from benchmark.workspace import relative_path
 
 DEFAULT_DIFFICULTY_ORDER = ("easy", "medium", "hard")
+SUPPORTED_SUITES = ("greenfield", "evolution")
 
 # Fixed set of 7 tasks used for temperature discovery. Covers 7 skill categories:
 # basic parsing/aggregation, generics/data structures, async/parallelism,
@@ -20,6 +23,13 @@ DISCOVERY_TASK_IDS = (
     "medium-011",   # srp-reporting
     "hard-007",
     "hard-013",
+)
+
+EVOLUTION_DISCOVERY_TASK_IDS = (
+    "evolution-discovery-easy-001",
+    "evolution-discovery-medium-001",
+    "evolution-discovery-medium-002",
+    "evolution-discovery-hard-001",
 )
 
 DISCOVERY_TASK_DESCRIPTIONS = {
@@ -37,6 +47,7 @@ DISCOVERY_TASK_DESCRIPTIONS = {
 class ScoreConfig:
     compile: float
     tests: dict[str, float]
+    regression: dict[str, float] = field(default_factory=dict)
 
     @property
     def available_points(self) -> float:
@@ -63,24 +74,49 @@ class Task:
     hidden_tests: tuple[str, ...]
     build_command: str
     test_command: str
+    suite: str = "greenfield"
+    role: str = "scored"
+    version: str = "1"
+    editable_files: tuple[str, ...] = ()
+    build_project: str | None = None
+    test_groups: tuple[TestGroup, ...] = ()
 
     @property
     def prompt(self) -> str:
         return self.prompt_path.read_text(encoding="utf-8")
 
 
+@dataclass(frozen=True)
+class TestGroup:
+    name: str
+    build_command: str
+    test_command: str
+
+
 def load_tasks(
     difficulty: str | None = None,
     *,
     tasks_root: Path = Path("tasks"),
+    suite: str = "greenfield",
+    role: str | None = "scored",
 ) -> list[Task]:
+    tasks_root = tasks_root.resolve()
+    if suite == "all":
+        return [task for selected_suite in SUPPORTED_SUITES
+                for task in load_tasks(difficulty, tasks_root=tasks_root,
+                                       suite=selected_suite, role=role)]
+    if suite not in SUPPORTED_SUITES:
+        raise ValueError(f"Unknown task suite: {suite}")
+    if suite == "evolution":
+        tasks_root = tasks_root / "evolution"
     if _is_all_difficulties(difficulty):
         tasks: list[Task] = []
         for difficulty_name in _discover_difficulties(tasks_root):
             tasks.extend(_load_tasks_from_difficulty(difficulty_name, tasks_root))
-        return tasks
+        return [task for task in tasks if role is None or task.role == role]
 
-    return _load_tasks_from_difficulty(str(difficulty), tasks_root)
+    return [task for task in _load_tasks_from_difficulty(str(difficulty), tasks_root)
+            if role is None or task.role == role]
 
 
 def _load_tasks_from_difficulty(
@@ -108,7 +144,8 @@ def _discover_difficulties(tasks_root: Path) -> tuple[str, ...]:
     if not tasks_root.exists():
         raise FileNotFoundError(f"Task root directory not found: {tasks_root}")
 
-    discovered = {path.name for path in tasks_root.iterdir() if path.is_dir()}
+    discovered = {path.name for path in tasks_root.iterdir()
+                  if path.is_dir() and path.name not in SUPPORTED_SUITES}
     ordered = [
         difficulty for difficulty in DEFAULT_DIFFICULTY_ORDER if difficulty in discovered
     ]
@@ -138,6 +175,27 @@ def validate_tasks(tasks: list[Task]) -> list[str]:
                 errors.append(f"{task.id}: missing hidden test file {hidden_test}")
         if task.score.available_points <= 0:
             errors.append(f"{task.id}: score must be positive")
+        if task.suite not in SUPPORTED_SUITES or task.role not in {"scored", "discovery"}:
+            errors.append(f"{task.id}: invalid suite or role")
+        for path in (*task.public_files, *task.hidden_tests):
+            try:
+                relative_path(path)
+            except ValueError as exc:
+                errors.append(f"{task.id}: {exc}")
+        if task.suite == "evolution":
+            if not task.editable_files or task.build_project not in task.public_files:
+                errors.append(f"{task.id}: evolution requires editable_files and a public build_project")
+            if {group.name for group in task.test_groups} != {"feature", "regression"} or len(task.test_groups) != 2:
+                errors.append(f"{task.id}: evolution requires feature and regression test groups")
+            if task.score.compile != 0 or not task.score.tests or not task.score.regression:
+                errors.append(f"{task.id}: evolution requires feature/regression weights and zero compile points")
+            if task.score.tests.keys() & task.score.regression.keys():
+                errors.append(f"{task.id}: test names must be unique across groups")
+        weights = [task.score.compile, *task.score.tests.values(), *task.score.regression.values()]
+        if any(not math.isfinite(weight) or weight < 0 for weight in weights):
+            errors.append(f"{task.id}: score weights must be finite and nonnegative")
+        if any(weight <= 0 for weight in (*task.score.tests.values(), *task.score.regression.values())):
+            errors.append(f"{task.id}: test weights must be positive")
     return errors
 
 
@@ -151,7 +209,9 @@ def select_discovery_tasks(tasks: list[Task]) -> list[Task]:
     selected: list[Task] = []
     missing: list[str] = []
 
-    for expected_id in DISCOVERY_TASK_IDS:
+    suites = {task.suite for task in tasks}
+    expected_ids = EVOLUTION_DISCOVERY_TASK_IDS if suites == {"evolution"} else DISCOVERY_TASK_IDS
+    for expected_id in expected_ids:
         if expected_id in task_by_id:
             selected.append(task_by_id[expected_id])
         else:
@@ -171,6 +231,8 @@ def _load_task(task_dir: Path, data: dict[str, Any]) -> Task:
     tests_data = score_data.get("tests", {})
     if not isinstance(tests_data, dict):
         raise ValueError(f"{task_dir}: score.tests must be a mapping")
+    suite = str(data.get("suite", "greenfield"))
+    groups = data.get("test_groups", {})
 
     return Task(
         id=str(data["id"]),
@@ -178,20 +240,28 @@ def _load_task(task_dir: Path, data: dict[str, Any]) -> Task:
         difficulty=str(data["difficulty"]),
         root=task_dir,
         prompt_path=task_dir / "prompt.md",
-        template_dir=task_dir / "template",
+        template_dir=task_dir / ("starter" if suite == "evolution" else "template"),
         tests_dir=task_dir / "tests",
         score=ScoreConfig(
             compile=float(score_data.get("compile", 0)),
             tests={str(key): float(value) for key, value in tests_data.items()},
+            regression={str(key): float(value) for key, value in score_data.get("regression", {}).items()},
         ),
         language=str(data.get("language", "csharp")),
         dotnet_version=str(data.get("dotnet_version", "8")),
         project_type=str(data.get("project_type", "classlib")),
-        generated_file=str(data.get("generated_file", "Solution.cs")),
+        generated_file=str(data.get("generated_file", "" if suite == "evolution" else "Solution.cs")),
         solution_class=str(data.get("solution_class", "Solution")),
         solution_method=str(data.get("solution_method", "Execute")),
         public_files=tuple(data.get("public_files", [])),
         hidden_tests=tuple(data.get("hidden_tests", [])),
         build_command=str(data["build_command"]),
-        test_command=str(data["test_command"]),
+        test_command=str(data.get("test_command", "")),
+        suite=suite,
+        role=str(data.get("role", "scored")),
+        version=str(data.get("version", "1")),
+        editable_files=tuple(data.get("editable_files", [])),
+        build_project=data.get("build_project"),
+        test_groups=tuple(TestGroup(str(name), str(group["build_command"]), str(group["test_command"]))
+                          for name, group in groups.items()),
     )

@@ -26,6 +26,7 @@ from benchmark.solution import (
 )
 from benchmark.runner import CommandResult, decode_output
 from benchmark.tasks import Task
+from benchmark.workspace import ProjectSnapshot, capture_project, copy_public_files
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,7 @@ class GeneratedSolution:
     opencode_metadata: OpenCodeRunMetadata | None = None
     pi_metadata: PiRunMetadata | None = None
     infrastructure_error: str | None = None
+    project_snapshot: ProjectSnapshot | None = None
 
 
 class SolutionGenerator(Protocol):
@@ -138,7 +140,7 @@ class OpenCodeGenerator:
         if config.opencode.version is None:
             raise ValueError("opencode.version is required for the opencode generator")
         self._llm = config.llm
-        self._opencode = config.opencode
+        self._opencode = replace(config.opencode, cache_dir=config.opencode.cache_dir.resolve())
         self._rate_limiter = RequestRateLimiter(config.llm.requests_per_minute)
 
     def generate(self, task: Task, task_dir: Path) -> GeneratedSolution:
@@ -171,6 +173,7 @@ class OpenCodeGenerator:
             return preflight
 
     def prepare(self, task: Task, task_dir: Path) -> PreparedOpenCodeGeneration:
+        task_dir = task_dir.resolve()
         preflight = self.preflight()
         prompt = self._build_agent_prompt(task)
         (task_dir / "prompt.md").write_text(task.prompt, encoding="utf-8")
@@ -370,6 +373,10 @@ class OpenCodeGenerator:
                 False,
             )
 
+        if task.suite == "evolution":
+            return (_project_solution(task, workspace, task_dir, run, session_time_seconds,
+                                      usage, "opencode", opencode_metadata=metadata), False)
+
         if not generated_path.exists():
             if _opencode_session_missing_model_result(output):
                 # An empty session (clean exit, no model output, no generated
@@ -518,13 +525,16 @@ class OpenCodeGenerator:
         if workspace.exists():
             _safe_rmtree(workspace, safe_parent=task_dir)
         workspace.mkdir(parents=True)
-        for public_file in task.public_files:
-            if _is_generated_file(task, public_file):
-                continue
-            source = task.template_dir / public_file
-            destination = workspace / public_file
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
+        if task.suite == "evolution":
+            copy_public_files(task, workspace)
+        else:
+            for public_file in task.public_files:
+                if _is_generated_file(task, public_file):
+                    continue
+                source = task.template_dir / public_file
+                destination = workspace / public_file
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
         (workspace / "BENCHMARK_PROMPT.md").write_text(prompt, encoding="utf-8")
         return workspace
 
@@ -645,6 +655,8 @@ class OpenCodeGenerator:
             "--env",
             "OPENCODE_CONFIG=/workspace/opencode.json",
             "--env",
+            "DOTNET_CLI_HOME=/tmp/benchmark-dotnet",
+            "--env",
             "HOME=/home/benchmark",
             "--env",
             "XDG_CONFIG_HOME=/home/benchmark/.config",
@@ -687,6 +699,7 @@ class OpenCodeGenerator:
                 f"type=bind,source={install_dir.resolve()},target=/opencode-install,readonly",
                 "--mount",
                 f"type=bind,source={workspace.resolve()},target=/workspace",
+                *_dotnet_build_mounts(workspace),
                 "--mount",
                 f"type=bind,source={home_dir.resolve()},target=/home/benchmark",
                 *env,
@@ -1001,7 +1014,7 @@ class PiGenerator:
         if config.pi.version is None:
             raise ValueError("pi.version is required for the pi generator")
         self._llm = config.llm
-        self._pi = config.pi
+        self._pi = replace(config.pi, cache_dir=config.pi.cache_dir.resolve())
 
     # -- public API mirroring OpenCodeGenerator ---------------------------------
 
@@ -1032,6 +1045,7 @@ class PiGenerator:
 
     def prepare(self, task: Task, task_dir: Path) -> PreparedPiGeneration:
         """Prepare workspace + optionally docker-create container."""
+        task_dir = task_dir.resolve()
         preflight = self.preflight()
         prompt = self._build_user_prompt(task)
         (task_dir / "prompt.md").write_text(task.prompt, encoding="utf-8")
@@ -1243,13 +1257,16 @@ class PiGenerator:
         if workspace.exists():
             _safe_rmtree(workspace, safe_parent=task_dir)
         workspace.mkdir(parents=True)
-        for public_file in task.public_files:
-            if _is_generated_file(task, public_file):
-                continue
-            source = task.template_dir / public_file
-            destination = workspace / public_file
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
+        if task.suite == "evolution":
+            copy_public_files(task, workspace)
+        else:
+            for public_file in task.public_files:
+                if _is_generated_file(task, public_file):
+                    continue
+                source = task.template_dir / public_file
+                destination = workspace / public_file
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
         (workspace / "BENCHMARK_PROMPT.md").write_text(prompt, encoding="utf-8")
 
         # Write models.json for provider config inside workspace .pi dir
@@ -1265,6 +1282,8 @@ class PiGenerator:
         return workspace
 
     def _build_user_prompt(self, task: Task) -> str:
+        if task.suite == "evolution":
+            return _evolution_prompt(task, self._pi.build_fix_rounds if self._pi.verify_build else 0)
         sections = [
             "You are generating a C# source file in a project workspace.",
             f"Follow these solution rules:\n{_solution_rules()}\n- The main public class must be named `{task.solution_class}`.",
@@ -1354,10 +1373,13 @@ class PiGenerator:
             "OPENCODE_BENCHMARK_API_KEY",
             "--env",
             "PI_CODING_AGENT_DIR=/home/benchmark/.pi/agent",
+            "--env",
+            "DOTNET_CLI_HOME=/tmp/benchmark-dotnet",
             "--mount",
             f"type=bind,source={install_dir.resolve()},target=/pi-install,readonly",
             "--mount",
             f"type=bind,source={workspace.resolve()},target=/workspace",
+            *_dotnet_build_mounts(workspace),
             "--mount",
             f"type=bind,source={home_dir.resolve()},target=/home/benchmark",
             self._pi.docker_image,
@@ -1388,6 +1410,10 @@ class PiGenerator:
         )
 
         usage = _parse_agentic_usage(_stdout_source(run), generator="pi")
+
+        if task.suite == "evolution":
+            return _project_solution(task, workspace, task_dir, run, session_time_seconds,
+                                     usage, "pi", pi_metadata=metadata)
 
         generated_path = workspace / task.generated_file
         if not generated_path.exists():
@@ -1621,6 +1647,22 @@ def _build_pi_prompt_suffix(config: PiConfig) -> str:
 
 
 
+def _dotnet_build_mounts(workspace: Path) -> list[str]:
+    """Keep SDK output metadata and apphost permissions off Windows bind mounts."""
+    project_dirs = {
+        project.parent.relative_to(workspace)
+        for project in workspace.rglob("*.csproj")
+        if not {"bin", "obj"}.intersection(project.relative_to(workspace).parts)
+    }
+    mounts = []
+    for directory in sorted(project_dirs or {Path(".")}):
+        for name in ("bin", "obj"):
+            # Docker's --mount tmpfs defaults to noexec. SDK apphosts need exec,
+            # and the sticky mode lets the unprivileged Pi user create outputs.
+            mounts.extend(["--tmpfs", f"/workspace/{(directory / name).as_posix()}:rw,exec,mode=1777"])
+    return mounts
+
+
 def _pi_workspace_generation_instructions(task: Task) -> str:
     return (
         "Workspace instructions:\n"
@@ -1719,7 +1761,7 @@ def _public_files_list(task: Task) -> str:
     files = [
         public_file
         for public_file in task.public_files
-        if not _is_generated_file(task, public_file)
+        if task.suite == "evolution" or not _is_generated_file(task, public_file)
     ]
     if not files:
         return "- (none)"
@@ -1776,6 +1818,8 @@ def _workspace_generation_instructions(task: Task) -> str:
 
 
 def _agent_prompt(task: Task, config: OpenCodeConfig) -> str:
+    if task.suite == "evolution":
+        return _evolution_prompt(task, config.build_fix_rounds if config.verify_build else 0, config.max_steps)
     sections = [
         "You are generating a C# source file in a project workspace.",
         "Follow these solution rules:\n" + _solution_rules(),
@@ -1789,3 +1833,40 @@ def _agent_prompt(task: Task, config: OpenCodeConfig) -> str:
             sections.append(verification)
     sections.append(_build_opencode_prompt_suffix(config))
     return "\n\n".join(sections)
+
+
+def _evolution_prompt(task: Task, build_fix_rounds: int, max_steps: int | None = None) -> str:
+    sections = [
+        "Add the requested feature to the existing, working C# project in this workspace.",
+        "Preserve its existing public contracts, namespaces and coding conventions. "
+        "Use .NET 8 and only the dependencies already present. "
+        "Do not change project files, package references or build configuration. "
+        "Do not delegate the task to another agent.",
+        "Task:\n" + _task_contract(task),
+        _workspace_summary(task),
+        "You may create, edit or remove C# sources matching these workspace paths:\n"
+        + "\n".join(f"- `{pattern}`" for pattern in task.editable_files)
+        + "\nWrite all changes directly into the workspace. Hidden tests are absent.",
+    ]
+    if build_fix_rounds:
+        sections.append(
+            f"Compile with `dotnet build {task.build_project} --configuration Release`. "
+            f"Fix build errors in permitted sources, at most {build_fix_rounds} build-and-fix attempts. "
+            "Finish with your best version when that limit is reached."
+        )
+    sections.append("Work non-interactively. Do not ask the user questions. Finish once the feature is complete "
+                    "and the project builds cleanly."
+                    + (f" Stay within {max_steps} tool steps." if max_steps is not None else ""))
+    return "\n\n".join(sections)
+
+
+def _project_solution(task: Task, workspace: Path, task_dir: Path, run: CommandResult,
+                      seconds: float, usage: LlmUsage, generator: str, **metadata: Any) -> GeneratedSolution:
+    warnings = (f"{generator} exited with code {run.exit_code}.",) if run.exit_code else ()
+    try:
+        snapshot = capture_project(task, workspace, task_dir)
+    except (ValueError, OSError, UnicodeError) as exc:
+        return GeneratedSolution(ExtractedCode(None, warnings, str(exc)), seconds, usage,
+                                 generator=generator, **metadata)
+    return GeneratedSolution(ExtractedCode(None, warnings), seconds, usage, generator=generator,
+                             project_snapshot=snapshot, **metadata)

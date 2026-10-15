@@ -1,0 +1,44 @@
+id: "evolution-easy-001"
+name: "Add non-throwing stack operations"
+suite: "evolution"
+role: "scored"
+version: "1"
+difficulty: "easy"
+language: "csharp"
+dotnet_version: "8"
+project_type: "classlib"
+build_project: "StackProject.csproj"
+public_files:
+  - "StackProject.csproj"
+  - "README.md"
+  - "src/SimpleStack.cs"
+  - "src/StackStorage.cs"
+editable_files:
+  - "src/*.cs"
+hidden_tests:
+  - "regression/Regression.Tests.csproj"
+  - "regression/UnitTests.cs"
+  - "feature/Feature.Tests.csproj"
+  - "feature/UnitTests.cs"
+build_command: "dotnet build StackProject.csproj --configuration Release"
+test_groups:
+  regression:
+    build_command: "dotnet build tests/regression/Regression.Tests.csproj --configuration Release"
+    test_command: 'dotnet test tests/regression/Regression.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=regression.trx" --results-directory TestResults/regression'
+  feature:
+    build_command: "dotnet build tests/feature/Feature.Tests.csproj --configuration Release"
+    test_command: 'dotnet test tests/feature/Feature.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=feature.trx" --results-directory TestResults/feature'
+score:
+  compile: 0
+  tests:
+    try_operations_on_empty_stack_return_false_and_default: 2
+    try_pop_removes_the_latest_item: 2
+    try_peek_preserves_the_latest_item: 2
+    try_operations_support_null_values: 2
+    try_operations_interoperate_with_existing_methods: 2
+  regression:
+    old_push_and_pop_preserve_lifo: 1
+    old_peek_preserves_count: 1
+    old_empty_operations_throw: 1
+    old_instances_are_independent: 1
+    old_methods_support_null_and_default_values: 1

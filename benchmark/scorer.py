@@ -23,6 +23,11 @@ class TaskScore:
     generator: str = "opencode"
     opencode_metadata: dict[str, Any] | None = None
     temperature: float | None = None
+    suite: str = "greenfield"
+    difficulty: str | None = None
+    feature_ratio: float | None = None
+    regression_ratio: float | None = None
+    pi_metadata: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -35,6 +40,20 @@ class BenchmarkScore:
 
 def score_task(task: Task, result: TaskRunResult) -> TaskScore:
     available = task.score.available_points
+    if task.suite == "evolution":
+        feature = regression = 0.0
+        if result.status not in {"extraction_error", "build_failed", "infrastructure_error"}:
+            groups = result.test_group_results or {}
+            feature_passed = set(groups.get("feature", {}).get("passed_tests", ()))
+            regression_passed = set(groups.get("regression", {}).get("passed_tests", ()))
+            feature = sum(weight for name, weight in task.score.tests.items() if name in feature_passed) / sum(task.score.tests.values())
+            regression = sum(weight for name, weight in task.score.regression.items() if name in regression_passed) / sum(task.score.regression.values())
+        earned = available * feature * regression
+        return TaskScore(task.id, result.status, result.llm_response_time_seconds, result.llm_usage,
+                         earned, available, 0, earned, result.passed_tests, result.failed_tests,
+                         generator=result.generator, opencode_metadata=result.opencode_metadata,
+                         temperature=result.temperature, suite=task.suite, difficulty=task.difficulty,
+                         feature_ratio=feature, regression_ratio=regression, pi_metadata=result.pi_metadata)
 
     # Non-passing terminal states earn 0 but always keep the task's full
     # available points in the denominator, so the final score is computed over
@@ -56,6 +75,7 @@ def score_task(task: Task, result: TaskRunResult) -> TaskScore:
             generator=result.generator,
             opencode_metadata=result.opencode_metadata,
             temperature=result.temperature,
+            pi_metadata=result.pi_metadata,
         )
 
     earned_test_points = sum(
@@ -78,6 +98,7 @@ def score_task(task: Task, result: TaskRunResult) -> TaskScore:
         generator=result.generator,
         opencode_metadata=result.opencode_metadata,
         temperature=result.temperature,
+        pi_metadata=result.pi_metadata,
     )
 
 

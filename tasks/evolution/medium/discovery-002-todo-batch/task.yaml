@@ -1,0 +1,44 @@
+id: evolution-discovery-medium-002
+name: "Add atomic batch completion to a todo API"
+difficulty: medium
+suite: evolution
+role: discovery
+version: "1"
+language: csharp
+dotnet_version: "8"
+project_type: webapi
+build_project: Todos.csproj
+editable_files:
+  - "src/*.cs"
+public_files:
+  - README.md
+  - Todos.csproj
+  - src/TodoStore.cs
+  - src/Program.cs
+hidden_tests:
+  - feature/Feature.Tests.csproj
+  - feature/UnitTests.cs
+  - regression/Regression.Tests.csproj
+  - regression/UnitTests.cs
+build_command: "dotnet build Todos.csproj --configuration Release"
+test_groups:
+  feature:
+    build_command: "dotnet build tests/feature/Feature.Tests.csproj --configuration Release"
+    test_command: 'dotnet test tests/feature/Feature.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=feature.trx" --results-directory TestResults/feature'
+  regression:
+    build_command: "dotnet build tests/regression/Regression.Tests.csproj --configuration Release"
+    test_command: 'dotnet test tests/regression/Regression.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=regression.trx" --results-directory TestResults/regression'
+score:
+  compile: 0
+  tests:
+    batch_returns_requested_order_and_updates_reads: 4
+    invalid_batches_return_400_without_changes: 4
+    unknown_ids_roll_back_the_whole_batch: 4
+    repeated_completion_is_idempotent_and_snapshots_are_stable: 4
+    concurrent_batches_preserve_all_updates_and_sorted_reads: 4
+  regression:
+    old_creation_payload_and_location_are_preserved: 1
+    old_validation_and_duplicate_ids_are_preserved: 1
+    old_reads_sort_by_id_and_missing_reads_return_404: 1
+    old_deletion_and_app_isolation_are_preserved: 1
+    old_concurrent_creates_have_one_winner: 1

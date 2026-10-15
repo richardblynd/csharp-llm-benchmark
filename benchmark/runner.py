@@ -16,6 +16,7 @@ from benchmark.config import DockerConfig
 from benchmark.fsafety import safe_rmtree as _safe_rmtree
 from benchmark.solution import ExtractedCode, LlmUsage
 from benchmark.tasks import Task
+from benchmark.workspace import ProjectSnapshot, restore_project, task_fingerprint
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,9 @@ class TaskRunResult:
     opencode_metadata: dict[str, Any] | None = None
     pi_metadata: dict[str, Any] | None = None
     temperature: float | None = None
+    suite: str = "greenfield"
+    task_fingerprint: str | None = None
+    test_group_results: dict[str, dict[str, Any]] | None = None
 
 
 class DockerRunner:
@@ -80,12 +84,15 @@ class DockerRunner:
         pi_metadata: dict[str, Any] | None = None,
         temperature: float | None = None,
         generation_infrastructure_error: str | None = None,
+        project_snapshot: ProjectSnapshot | None = None,
     ) -> TaskRunResult:
         metadata = {
             "generator": generator,
             "opencode_metadata": opencode_metadata,
             "pi_metadata": pi_metadata,
             "temperature": temperature,
+            "suite": task.suite,
+            "task_fingerprint": task_fingerprint(task) if task.suite == "evolution" else None,
         }
         if generation_infrastructure_error is not None:
             return TaskRunResult(
@@ -103,7 +110,7 @@ class DockerRunner:
                 **metadata,
             )
 
-        if extracted_code.code is None:
+        if extracted_code.code is None and project_snapshot is None:
             return TaskRunResult(
                 task_id=task.id,
                 status="extraction_error",
@@ -124,7 +131,7 @@ class DockerRunner:
             dir=artifact_dir,
         ) as temp_dir:
             workdir = Path(temp_dir)
-            self._prepare_workspace(task, extracted_code.code, workdir)
+            self._prepare_workspace(task, extracted_code.code, workdir, project_snapshot=project_snapshot)
             self._snapshot_workspace(workdir, artifact_dir / "workspace")
 
             container_name = f"csharp-llm-benchmark-{workdir.name}"
@@ -237,6 +244,11 @@ class DockerRunner:
                         **metadata,
                     )
 
+                if task.suite == "evolution":
+                    return self._evaluate_test_groups(task, container_name, container_workdir, workdir,
+                                                     artifact_dir, build, extracted_code.warnings,
+                                                     llm_response_time_seconds, llm_usage, metadata)
+
                 test = self._exec_in_container(
                     container_name,
                     container_workdir,
@@ -326,7 +338,17 @@ class DockerRunner:
         with self._lock:
             return self._cancelled
 
-    def _prepare_workspace(self, task: Task, code: str, workdir: Path) -> None:
+    def _prepare_workspace(self, task: Task, code: str | None, workdir: Path,
+                           *, project_snapshot: ProjectSnapshot | None = None) -> None:
+        if task.suite == "evolution":
+            if project_snapshot is None:
+                raise ValueError("Evolution evaluation requires a project delivery")
+            restore_project(task, project_snapshot, workdir)
+            for hidden_test in task.hidden_tests:
+                destination = workdir / "tests" / hidden_test
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(task.tests_dir / hidden_test, destination)
+            return
         for public_file in task.public_files:
             source = task.template_dir / public_file
             destination = workdir / public_file
@@ -354,6 +376,54 @@ class DockerRunner:
         tests_destination.mkdir(parents=True, exist_ok=True)
         for hidden_test in task.hidden_tests:
             shutil.copy2(task.tests_dir / hidden_test, tests_destination / hidden_test)
+
+    def _evaluate_test_groups(self, task: Task, container_name: str, container_workdir: str,
+                              workdir: Path, artifact_dir: Path, build: CommandResult,
+                              warnings: tuple[str, ...], seconds: float, usage: LlmUsage,
+                              metadata: dict[str, Any]) -> TaskRunResult:
+        groups: dict[str, dict[str, Any]] = {}
+        infrastructure_error = None
+        last_test = None
+        # Both groups run independently even when feature test compilation fails.
+        for group in task.test_groups:
+            group_build = self._exec_in_container(container_name, container_workdir, group.build_command)
+            (artifact_dir / f"{group.name}-build.log").write_text(group_build.combined_output + "\n", encoding="utf-8")
+            test = None
+            if group_build.exit_code == 0 and not group_build.timed_out:
+                test = self._exec_in_container(container_name, container_workdir, group.test_command)
+                (artifact_dir / f"{group.name}-test.log").write_text(test.combined_output + "\n", encoding="utf-8")
+                last_test = test
+            groups[group.name] = {
+                "build_exit_code": group_build.exit_code,
+                "test_exit_code": test.exit_code if test else None,
+                "passed_tests": [], "failed_tests": [],
+            }
+            for command in (group_build, test):
+                if command and (command.timed_out or command.exit_code in {125, 126, 127}):
+                    infrastructure_error = f"{group.name} evaluation command timed out or could not start."
+
+        copied = self._copy_results_from_container(container_name, container_workdir, workdir)
+        if copied.exit_code != 0 and any(group["test_exit_code"] is not None for group in groups.values()):
+            infrastructure_error = "Docker could not copy group test results out of the container."
+        all_passed, all_failed = set(), set()
+        for name, group in groups.items():
+            passed, failed = parse_trx_results(workdir / "TestResults" / name)
+            # A broken test build never earns points from stale or unrelated results.
+            if group["test_exit_code"] is None:
+                passed, failed = set(), set()
+            expected = set(task.score.tests if name == "feature" else task.score.regression)
+            failed |= expected - passed
+            passed -= failed
+            group["passed_tests"] = sorted(passed)
+            group["failed_tests"] = sorted(failed)
+            all_passed |= passed
+            all_failed |= failed
+        status = "infrastructure_error" if infrastructure_error else (
+            "passed" if not all_failed and all(group["test_exit_code"] == 0 for group in groups.values())
+            else "tests_failed")
+        return TaskRunResult(task.id, status, seconds, usage, str(workdir), build, last_test,
+                             tuple(sorted(all_passed)), tuple(sorted(all_failed)), warnings,
+                             infrastructure_error=infrastructure_error, test_group_results=groups, **metadata)
 
     def _snapshot_workspace(self, workdir: Path, destination: Path) -> None:
         if destination.exists():
@@ -385,7 +455,8 @@ class DockerRunner:
                 "--tmpfs",
                 "/tmp:rw,noexec,nosuid,size=64m,mode=1777",
                 "--tmpfs",
-                "/workspace:rw,nosuid,nodev,size=256m,mode=1777",
+                # Native NuGet dependencies (e.g. SQLite) need executable mappings.
+                "/workspace:rw,exec,nosuid,nodev,size=256m,mode=1777",
                 "--env",
                 "DOTNET_CLI_HOME=/tmp",
                 "--env",
@@ -592,6 +663,8 @@ class DockerRunner:
             opencode_metadata=opencode_metadata,
             pi_metadata=pi_metadata,
             temperature=temperature,
+            suite=task.suite,
+            task_fingerprint=task_fingerprint(task) if task.suite == "evolution" else None,
         )
 
 
@@ -646,6 +719,9 @@ def write_result_json(
         "temperature": result.temperature,
         "build_exit_code": result.build.exit_code if result.build else None,
         "test_exit_code": result.test.exit_code if result.test else None,
+        "suite": result.suite,
+        "task_fingerprint": result.task_fingerprint,
+        "test_group_results": result.test_group_results,
     }
     if model is not None:
         payload["model"] = model

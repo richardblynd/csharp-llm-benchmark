@@ -1,0 +1,44 @@
+id: evolution-discovery-hard-001
+name: "Add durable compare-exchange to counters"
+difficulty: hard
+suite: evolution
+role: discovery
+version: "1"
+language: csharp
+dotnet_version: "8"
+project_type: classlib
+build_project: Counters.csproj
+editable_files:
+  - "src/*.cs"
+public_files:
+  - README.md
+  - Counters.csproj
+  - src/CounterStore.cs
+hidden_tests:
+  - feature/Feature.Tests.csproj
+  - feature/UnitTests.cs
+  - regression/Regression.Tests.csproj
+  - regression/UnitTests.cs
+build_command: "dotnet build Counters.csproj --configuration Release"
+test_groups:
+  feature:
+    build_command: "dotnet build tests/feature/Feature.Tests.csproj --configuration Release"
+    test_command: 'dotnet test tests/feature/Feature.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=feature.trx" --results-directory TestResults/feature'
+  regression:
+    build_command: "dotnet build tests/regression/Regression.Tests.csproj --configuration Release"
+    test_command: 'dotnet test tests/regression/Regression.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=regression.trx" --results-directory TestResults/regression'
+score:
+  compile: 0
+  tests:
+    compare_exchange_creates_updates_and_reports_mismatch: 5
+    compare_exchange_preserves_name_and_integer_contracts: 5
+    compare_exchange_is_persisted_and_initialization_is_idempotent: 5
+    concurrent_connections_have_one_compare_exchange_winner: 5
+    compare_exchange_interoperates_with_addition: 5
+    cancelled_and_failed_writes_preserve_the_previous_value: 5
+  regression:
+    old_initialization_and_unknown_values_are_preserved: 1
+    old_addition_normalization_and_case_are_preserved: 1
+    old_overflow_and_cancellation_leave_state_intact: 1
+    old_borrowed_connections_and_failures_are_preserved: 1
+    old_concurrent_additions_are_atomic_across_connections: 1

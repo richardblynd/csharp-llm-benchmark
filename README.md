@@ -334,6 +334,209 @@ agent, set `opencode.keep_timed_out_containers: true`; the timed-out container
 name is then recorded in the task `result.json` under `opencode.container_name`,
 and the task `opencode-home/` directory is preserved for inspection.
 
+## Feature addition and complete campaigns
+
+The `evolution` suite evaluates changes to a working C# project. Its six scored
+pilot tasks total 120 points, with two tasks per difficulty:
+
+| ID | Difficulty | Feature | Points |
+| --- | --- | --- | ---: |
+| evolution-easy-001 | easy | Non-throwing stack operations | 10 |
+| evolution-easy-002 | easy | HTTP catalog filtering and sorting | 10 |
+| evolution-medium-001 | medium | Atomic reservation rescheduling | 20 |
+| evolution-medium-002 | medium | Ordered notification fallback | 20 |
+| evolution-hard-001 | hard | Durable SQLite stock reservations and release | 30 |
+| evolution-hard-002 | hard | Outbox retry backoff and dead letters | 30 |
+
+Both Pi and OpenCode receive the complete public project and may create,
+modify or remove permitted C# sources. Namespaces are preserved. Project files
+and dependencies remain fixed. Hidden tests are absent during generation.
+The reservations task evaluates room moves, conflict rollback, validation,
+concurrent changes and preservation of the existing HTTP contracts. Its starter
+contains a working controller, domain store, DTO and DI registration; the requested
+feature is `PUT /reservations/{id}/schedule`.
+
+Evaluation reconstructs the delivered project and runs separate hidden feature
+and regression test projects. The score is the weighted feature pass fraction
+multiplied by the weighted regression pass fraction. A working but unchanged
+starter receives zero. A complete feature with all previous behavior preserved
+receives 100. Compilation is a prerequisite with no separate points. JSON and
+Markdown summaries show both fractions; `delivery.json`, `delivery/` and
+`changes.diff` record the evaluated sources.
+
+List or validate the pilot:
+
+```bash
+python -m benchmark.cli list-tasks --suite evolution
+python -m benchmark.cli validate --suite evolution
+python -m benchmark.cli validate --suite evolution --execute
+python -m benchmark.cli list-tasks --suite evolution --role discovery
+python -m benchmark.cli validate --suite evolution --role all --execute
+```
+
+The executable validation checks that each starter passes every regression and
+earns zero feature points, and that the reference passes both groups.
+Reference sources are overlaid on the starter project. The opt-in Docker tests
+also evaluate deliberately broken features and old contracts, including stock
+reservation limits, retry schedules, case-insensitive queries and channel names.
+They confirm that these changes reduce the score. The existing greenfield SQLite
+reference also runs to verify native dependency loading:
+
+```powershell
+$env:BENCHMARK_DOCKER_TESTS = "1"
+python -m unittest discover -s tests -p test_evolution_docker.py
+```
+
+Run the pilot against both agents, with normal speed/timeout calibration:
+
+```bash
+python -m benchmark.cli run --config config.yaml --suite evolution --difficulty all --generator all
+```
+
+Run only the stack task against both agents:
+
+```bash
+python -m benchmark.cli run --config config.yaml --suite evolution --generator all --task-id evolution-easy-001 --discovery-enabled false
+```
+
+Run the medium reservations task against both agents:
+
+```bash
+python -m benchmark.cli run --config config.yaml --suite evolution --difficulty medium --generator all --task-id evolution-medium-001 --discovery-enabled false
+```
+
+Run both hard tasks:
+
+```bash
+python -m benchmark.cli run --config config.yaml --suite evolution --difficulty hard --generator all --discovery-enabled false
+```
+
+Evolution uses four independent discovery tasks: ordered-set reordering,
+JSON report-format integration, atomic HTTP batch completion and durable SQLite
+compare-exchange. They contain 41 hidden tests and never enter the 120-point
+scored catalog. Every selected difficulty uses the same four discovery tasks.
+Greenfield keeps its historical seven-task discovery/reuse policy.
+With multiple candidate temperatures and discovery enabled, each `(suite, generator)`
+selects its own winner; ties choose the lowest temperature regardless of list order.
+Discovery cost and tokens are stored separately in `discovery.json` and the summaries.
+
+For a fixed-temperature run, use one `llm.temperatures` entry. Disabling discovery
+with multiple temperatures retains the legacy best-temperature sweep; this is a
+diagnostic protocol and cannot produce an official combined ranking.
+
+Earlier runs with two tasks had 30 available points. Compare scores using the
+same task catalog and weights; those runs and single-task diagnostics do not
+represent the current full 120-point catalog. They remain available as historical runs.
+
+Use `benchmark.suite: "all"` or `--suite all` to run both greenfield and evolution
+in one invocation. Together with `generator: "all"`, this executes greenfield
+with OpenCode and Pi, then evolution with OpenCode and Pi. Model metadata and
+speed calibration are obtained once and shared across all four evaluations.
+Each evaluation keeps its own task selection, output directory and summary.
+
+```bash
+python -m benchmark.cli run --config config.yaml --suite all --generator all
+```
+
+Use `difficulty: "all"`, omit `task_id`, and keep speed calibration enabled for
+the complete ranking. The example config selects both suites and both agents.
+Existing configs still default to `greenfield` and the OpenCode generator.
+A campaign continues the other pairs if one fails and returns a nonzero exit code.
+
+Runs involving evolution now use a campaign directory:
+
+```text
+results/<timestamp>_campaign-<id>/
+  campaign.json
+  calibration.json
+  greenfield/opencode/{discovery/, tasks/, summary.json, summary.md}
+  greenfield/pi/{discovery/, tasks/, summary.json, summary.md}
+  evolution/opencode/{discovery/, tasks/, summary.json, summary.md}
+  evolution/pi/{discovery/, tasks/, summary.json, summary.md}
+```
+
+The manifest records the exact configuration, generator profiles, task weights,
+versions and fingerprints of public/hidden files. It excludes credentials.
+Resume all missing work with the same YAML and original suite/generator selection:
+
+```bash
+python -m benchmark.cli run --config config.yaml --suite all --generator all --resume-campaign results/<campaign-directory>
+```
+
+Completed pairs are reused, partial discovery continues from saved results,
+completed discovery keeps its selected temperature, and only missing scored tasks
+run again. Configuration or contract changes require a new campaign. Do not change
+model, temperatures, sampling, concurrency, timeout settings or agent versions
+when resuming. Legacy flat result folders still support `--resume TASK_ID --resume-dir ...`.
+
+Generate the consolidated HTML/Markdown with:
+
+```bash
+python benchmark/aggregate_benchmark_results.py
+```
+
+The main columns are **Construção**, **Features**, and **Combinado**, with PI and
+OpenCode subcolumns and per-pair diagnostics. Each suite averages its two agents;
+the combined score averages the suites with equal weights, without rounding
+intermediate scores. Missing evaluations are `n/a`, never zero. The combined
+ranking requires all four complete evaluations from the same campaign, full task
+catalogs, speed calibration, and discovery (or one fixed temperature). It chooses
+the latest complete campaign per configuration and versions, not historical best
+scores. Partial/newer attempts remain listed separately. Filters, chart, highlights
+and score/GiB use the selected metric. Old flat runs stay in an individual history
+table and cannot supply a missing combined score.
+
+Single-suite historical best-run views remain available with `--suite greenfield`
+or `--suite evolution`; their averaging policy is unchanged and may include
+partial diagnostics. These are historical views, separate from the campaign ranking.
+
+Both generators put .NET/NuGet state in `/tmp/benchmark-dotnet` inside their
+containers. This avoids NuGet's first-build permission failure on WSL Windows
+bind mounts without changing the generator home or requiring an image rebuild.
+Their containers also mount each public project's standard `bin` and `obj`
+directories as tmpfs with execution enabled. The SDK can update file timestamps
+and executable permissions there while source changes remain in the host
+workspace. These runtime settings also apply to precreated containers and
+projects in subdirectories; an image rebuild is not required.
+
+The evaluator's `/workspace` tmpfs enables executable mappings so native package
+libraries such as SQLite can load. `/tmp` remains `noexec`, and the evaluator
+retains its existing network, user, read-only root and resource limits.
+
+To verify fresh builds, incremental web builds and executable permissions for
+both generators on WSL:
+
+```bash
+BENCHMARK_DOCKER_TESTS=1 python3 -m unittest discover -s tests -p test_agent_build_docker.py
+```
+
+The shared output and both generator cache paths are resolved at CLI startup,
+before calibration and the first suite/generator pair. Task roots and artifact
+directories are also anchored before Docker preflight, so preparation and
+subsequent pairs do not depend on later working-directory lookups.
+Caught task exceptions from preparation, generation or evaluation are written to
+`tasks/<task-id>/error.log` inside the run folder. The terminal prints the complete
+traceback after the final dashboard update so progress rendering cannot erase it.
+Matrix-level failures also print their full traceback, including errors before
+a run directory exists.
+
+If WSL reports `No module named 'benchmark'` even while the terminal prompt shows
+the project directory, check the actual working directory:
+
+```bash
+python3 -c 'import os; print(os.getcwd())'
+```
+
+A `FileNotFoundError` here means the terminal's directory reference is no longer
+valid. The prompt can retain the previous path. Leave that directory and enter
+the project again using its absolute path; for this checkout:
+
+```bash
+cd /
+cd /mnt/c/dev/ext/csharp-llm-benchmark
+python3 -m benchmark.cli run --config config.yaml
+```
+
 ## Aggregate benchmark results
 
 To generate Markdown and filterable HTML ranking tables from all benchmark run
@@ -345,16 +548,11 @@ python benchmark/aggregate_benchmark_results.py
 
 By default, this writes `results/benchmark_results.md` and
 `results/benchmark_results.html`. Running the command again recreates those
-files and overwrites their previous contents. Both reports group runs by model,
-publisher, quantization, KV cache quantization
-and context size. They show separate Pi and OpenCode scores, their average and
-maximum, and model size. The average and maximum use only available scores from
-these two agents. The HTML report also shows average score per GB and a chart
-comparing average score with model size. Clicking a model name toggles the search
-filter for that model. The browser remembers the current filters and sort
-for each generated HTML path, so reopening the report restores the same view.
-The table highlights best and worst visible values for the agent scores, average
-score, maximum score, and average score per GB.
+files and overwrites their previous contents. The default view ranks compatible
+campaigns, with separate construction, feature-addition and combined scores.
+Model details show temperatures, agent versions, timeout counts, feature/regression
+ratios, calibration, tokens and session time. The historical single-suite views
+can still be generated using `--suite greenfield` or `--suite evolution`.
 
 Use `--results-dir` to read runs from a different directory, or `--output` to
 write the Markdown report to a different file. The HTML file defaults to the

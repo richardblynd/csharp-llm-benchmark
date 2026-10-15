@@ -1,0 +1,53 @@
+id: "evolution-hard-002"
+name: "Add configurable outbox backoff and dead letters"
+suite: "evolution"
+role: "scored"
+version: "1"
+difficulty: "hard"
+language: "csharp"
+dotnet_version: "8"
+project_type: "classlib"
+build_project: "Outbox.csproj"
+public_files:
+  - "Outbox.csproj"
+  - "README.md"
+  - "src/Models.cs"
+  - "src/IEventPublisher.cs"
+  - "src/OutboxStore.cs"
+  - "src/OutboxWorker.cs"
+editable_files:
+  - "src/*.cs"
+hidden_tests:
+  - "regression/Regression.Tests.csproj"
+  - "regression/UnitTests.cs"
+  - "feature/Feature.Tests.csproj"
+  - "feature/UnitTests.cs"
+build_command: "dotnet build Outbox.csproj --configuration Release"
+test_groups:
+  regression:
+    build_command: "dotnet build tests/regression/Regression.Tests.csproj --configuration Release"
+    test_command: 'dotnet test tests/regression/Regression.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=regression.trx" --results-directory TestResults/regression'
+  feature:
+    build_command: "dotnet build tests/feature/Feature.Tests.csproj --configuration Release"
+    test_command: 'dotnet test tests/feature/Feature.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=feature.trx" --results-directory TestResults/feature'
+score:
+  compile: 0
+  tests:
+    retry_delays_double_and_obey_the_cap: 5
+    exhausted_events_move_to_dead_letter: 4
+    successful_retry_clears_failure_metadata: 3
+    retry_policy_validation_preserves_default_behavior: 2
+    concurrent_workers_respect_leases_and_schedules: 4
+    cancelled_publication_does_not_consume_retry_budget: 3
+    zero_delay_still_obeys_attempt_limits: 2
+    retry_time_uses_completion_clock_and_saturates: 4
+    delayed_events_do_not_block_ready_events: 3
+  regression:
+    old_enqueue_is_idempotent_normalized_and_validated: 1
+    old_successful_events_publish_once_in_order: 1
+    old_failures_retry_immediately_without_a_limit: 1
+    old_cancellation_stops_before_and_between_events: 1
+    old_workers_share_exclusive_event_claims: 1
+    old_publishers_and_stores_remain_independent: 1
+    old_snapshots_cannot_change_store_state: 1
+

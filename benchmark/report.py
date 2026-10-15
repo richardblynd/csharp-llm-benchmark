@@ -20,7 +20,9 @@ def create_run_dir(
     quantization: str,
     kv_cache_quantization: str | None = None,
     generator_mode: str = "opencode",
+    suite: str = "greenfield",
 ) -> Path:
+    output_dir = output_dir.resolve()
     generator_mode = _format_generator(generator_mode)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     parts: list[str] = [
@@ -31,7 +33,8 @@ def create_run_dir(
     base = "_".join(parts)
     if kv_cache_quantization is not None and str(kv_cache_quantization).strip():
         base = f"{base}@{_format_run_dir_label(str(kv_cache_quantization))}"
-    run_dir_name = f"{base}-{generator_mode.upper()}"
+    suite_suffix = "" if suite == "greenfield" else f"-{suite.upper()}"
+    run_dir_name = f"{base}{suite_suffix}-{generator_mode.upper()}"
     run_dir = output_dir / run_dir_name
     run_dir.mkdir(parents=True, exist_ok=False)
     (run_dir / "tasks").mkdir()
@@ -49,6 +52,8 @@ def write_summary(
     model_size_bytes: int | None = None,
     params_string: str | None = None,
     calibration_result: CalibrationResult | None = None,
+    evaluation: dict[str, Any] | None = None,
+    discovery_payload: dict[str, Any] | None = None,
 ) -> None:
     generated_at = datetime.now(timezone.utc).isoformat()
     total_llm_time = sum(
@@ -72,6 +77,10 @@ def write_summary(
     payload: dict[str, Any] = {
         "generated_at": generated_at,
         "generator": config.benchmark.generator,
+        "suite": config.benchmark.suite,
+        "schema_version": 3,
+        "campaign_id": evaluation.get("campaign_id") if evaluation else None,
+        "evaluation": evaluation,
         "calibration": asdict(calibration_result) if calibration_result is not None else None,
         "model": config.llm.model,
         "modelLabel": model_label,
@@ -153,7 +162,7 @@ def write_summary(
             "final_score": score.final_score,
         },
         "discovery": (
-            _discovery_payload(discovery_runs) if discovery_runs else None
+            _discovery_payload(discovery_runs) if discovery_runs else discovery_payload
         ),
         "selected_temperature": config.llm.temperature,
         "temperature_scores": _temperature_scores_payload(temperature_scores),
@@ -194,17 +203,14 @@ def _discovery_payload(
     discovery_runs: list[Any],
 ) -> dict[str, Any]:
     """Build the discovery section for summary.json."""
-    from benchmark.tasks import DISCOVERY_TASK_IDS
-
     temperature_scores = []
     selected_temp = discovery_runs[0].temperature if discovery_runs else None
 
     # Find winning temp (highest earned_points; tie-break: lowest index/temp)
     best_index = 0
     for idx, run in enumerate(discovery_runs):
-        if (
-            run.score.earned_points >
-            discovery_runs[best_index].score.earned_points
+        if (run.score.earned_points, -run.temperature) > (
+            discovery_runs[best_index].score.earned_points, -discovery_runs[best_index].temperature
         ):
             best_index = idx
     selected_temp = discovery_runs[best_index].temperature
@@ -221,10 +227,15 @@ def _discovery_payload(
 
     return {
         "enabled": True,
-        "sample_task_ids": list(DISCOVERY_TASK_IDS),
+        "sample_task_ids": [task.task_id for task in discovery_runs[0].task_scores],
         "temperatures_tested": [run.temperature for run in discovery_runs],
         "temperature_scores": temperature_scores,
         "selected_temperature": selected_temp,
+        "llm_response_time_seconds": sum(task.llm_response_time_seconds for run in discovery_runs for task in run.task_scores),
+        "llm_token_usage": {
+            name: sum_known_tokens(getattr(task.llm_usage, name) for run in discovery_runs for task in run.task_scores)
+            for name in ("prompt_tokens", "completion_tokens", "reasoning_tokens", "total_tokens")},
+        "temperature_runs": _temperature_scores_payload(discovery_runs),
     }
 
 
@@ -295,6 +306,7 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         "",
         f"- Generated at: `{payload['generated_at']}`",
         f"- Generator: `{_format_generator(payload.get('generator'))}`",
+        f"- Suite: `{payload.get('suite', 'greenfield')}`",
         f"- Model label: `{payload['modelLabel']}`",
         f"- Model: `{payload['model']}`",
         f"- Publisher: `{payload['publisher'] or 'n/a'}`",
@@ -309,6 +321,7 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         f"- Top K: `{_format_optional_number(payload['llm'].get('top_k'))}`",
         f"- Repetition penalty: `{_format_optional_number(payload['llm'].get('repetition_penalty'))}`",
         f"- Final score: `{payload['score']['final_score']}`",
+        f"- Campaign: `{payload.get('campaign_id') or 'historical standalone run'}`",
         f"- Points: `{payload['score']['earned_points']} / {payload['score']['available_points']}`",
         f"- Total LLM response time: `{format_duration_hms(payload['llm_response_time']['total_seconds'])}`",
         f"- Average LLM response time: `{_format_seconds(payload['llm_response_time']['average_seconds'])}`",
@@ -321,14 +334,15 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         *_render_calibration_section(payload.get("calibration")),
         *_render_discovery_section(payload.get("discovery")),
         *_render_temperature_table(payload["temperature_scores"]),
-        "| Task | Status | Temperature | Points | Passed | Failed | LLM time | Tokens |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Task | Status | Session | Temperature | Points | Passed | Failed | LLM time | Tokens |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for task in payload["tasks"]:
         lines.append(
-            "| {task_id} | {status} | {temperature} | {earned_points} / {available_points} | {passed} | {failed} | {llm_time} | {tokens} |".format(
+            "| {task_id} | {status} | {session} | {temperature} | {earned_points} / {available_points} | {passed} | {failed} | {llm_time} | {tokens} |".format(
                 task_id=task["task_id"],
                 status=task["status"],
+                session="timeout" if (task.get("pi_metadata") or task.get("opencode_metadata") or {}).get("timed_out") else "finished",
                 temperature=_format_temperature(task.get("temperature")),
                 earned_points=task["earned_points"],
                 available_points=task["available_points"],
@@ -339,6 +353,12 @@ def _render_markdown(payload: dict[str, Any]) -> str:
             )
         )
     lines.append("")
+    if payload.get("suite") == "evolution":
+        lines.extend(["| Task | Feature delivered | Existing behavior preserved |",
+                      "| --- | ---: | ---: |"])
+        for task in payload["tasks"]:
+            lines.append(f"| {task['task_id']} | {task['feature_ratio']:.1%} | {task['regression_ratio']:.1%} |")
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -421,6 +441,9 @@ def _render_discovery_section(discovery: dict[str, Any] | None) -> list[str]:
             "",
         ]
     )
+    if "llm_token_usage" in discovery:
+        lines.extend([f"Discovery tokens (all candidates, excluded from scored totals): `{_format_tokens(discovery['llm_token_usage'].get('total_tokens'))}`",
+                      f"Discovery session time: `{format_duration_hms(discovery.get('llm_response_time_seconds', 0))}`", ""])
     return lines
 
 

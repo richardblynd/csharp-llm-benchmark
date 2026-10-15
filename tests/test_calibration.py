@@ -469,7 +469,7 @@ class CalibrationIntegrationTests(unittest.TestCase):
                 self.assertIn("Concurrency calibration", (run_dir / "summary.md").read_text())
                 self.assertIn("| 2 | 40.00 |", (run_dir / "summary.md").read_text())
                 args.resume, args.resume_dir = "easy-001", run_dir
-                cli._execute_benchmark(config, [SimpleNamespace(id="easy-001")], args)
+                cli._execute_benchmark(config, [SimpleNamespace(id="easy-001", suite="greenfield")], args)
                 disabled = replace(config, benchmark=replace(config.benchmark, calibration=replace(config.benchmark.calibration, enabled=False)))
                 with self.assertRaisesRegex(ValueError, "calibration enabled"):
                     cli._execute_benchmark(disabled, [SimpleNamespace(id="easy-001")], args)

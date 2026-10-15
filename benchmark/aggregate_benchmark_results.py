@@ -62,6 +62,7 @@ class BenchmarkResult:
     earned_points: float | None
     available_points: float | None
     calibration: CalibrationSpeed | None = None
+    suite: str = "greenfield"
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,7 @@ class GroupedResult:
     score_opencode: float | None
     calibration_pi: CalibrationSpeed | None = None
     calibration_opencode: CalibrationSpeed | None = None
+    suite: str = "greenfield"
 
     def avg_score(self) -> float | None:
         scores = [s for s in (self.score_pi, self.score_opencode) if s is not None]
@@ -104,12 +106,12 @@ def group_results(results: list[BenchmarkResult]) -> list[GroupedResult]:
     for r in results:
         gen_label = normalize_generator(r.generator)
         kv_cache_key = r.kv_cache_quantization or ""
-        key = (r.model, r.publisher, r.quantization, kv_cache_key, r.context_limit)
+        key = (r.model, r.publisher, r.quantization, kv_cache_key, r.context_limit, r.suite)
         groups.setdefault(key, []).append((gen_label, r))
 
     grouped: list[GroupedResult] = []
     for key, items in groups.items():
-        model, publisher, quantization, kv_cache_key, context_limit = key
+        model, publisher, quantization, kv_cache_key, context_limit, suite = key
 
         score_map: dict[str, float | None] = {}
         calibration_map: dict[str, CalibrationSpeed | None] = {}
@@ -136,6 +138,7 @@ def group_results(results: list[BenchmarkResult]) -> list[GroupedResult]:
             score_opencode=score_map.get("OpenCode"),
             calibration_pi=calibration_map.get("Pi"),
             calibration_opencode=calibration_map.get("OpenCode"),
+            suite=suite,
         ))
 
     grouped.sort(key=lambda g: (g.avg_score() is not None, g.avg_score() if g.avg_score() is not None else -1.0), reverse=True)
@@ -145,10 +148,11 @@ def group_results(results: list[BenchmarkResult]) -> list[GroupedResult]:
 def main() -> int:
     args = parse_args()
     results_dir = args.results_dir.resolve()
+    report_name = "benchmark_results_evolution" if args.suite == "evolution" else "benchmark_results"
     output_path = (
         args.output.resolve()
         if args.output is not None
-        else results_dir / "benchmark_results.md"
+        else results_dir / f"{report_name}.md"
     )
     html_output_path = (
         args.html_output.resolve()
@@ -157,6 +161,16 @@ def main() -> int:
     )
 
     benchmark_results = collect_benchmark_results(results_dir)
+    if args.suite == "all":
+        from benchmark.campaign_report import collect_campaigns, render_campaign_html, render_campaign_markdown
+        campaigns = collect_campaigns(results_dir)
+        historical = [result for result in benchmark_results if '/' not in result.run_name]
+        output_path.write_text(render_campaign_markdown(campaigns), encoding="utf-8")
+        html_output_path.write_text(render_campaign_html(campaigns, historical,
+            results_dir=results_dir, output_path=html_output_path), encoding="utf-8")
+        print(f"Wrote {len(campaigns)} campaigns and {len(historical)} historical runs to {output_path} and {html_output_path}")
+        return 0
+    benchmark_results = [result for result in benchmark_results if result.suite == args.suite]
     grouped = group_results(benchmark_results)
     markdown = render_markdown(grouped, results_dir)
     output_path.write_text(markdown, encoding="utf-8")
@@ -186,6 +200,8 @@ def parse_args() -> argparse.Namespace:
         default=Path("results"),
         help="Directory containing benchmark run folders. Defaults to ./results.",
     )
+    parser.add_argument("--suite", choices=("all", "greenfield", "evolution"), default="all",
+                        help="Default: campaign scores for both suites and combined. Single-suite views retain historical best-run aggregation.")
     parser.add_argument(
         "--output",
         type=Path,
@@ -214,7 +230,13 @@ def collect_benchmark_results(results_dir: Path) -> list[BenchmarkResult]:
         raise NotADirectoryError(f"Results path is not a directory: {results_dir}")
 
     benchmark_results: list[BenchmarkResult] = []
-    for run_dir in sorted(path for path in results_dir.iterdir() if path.is_dir()):
+    run_dirs = []
+    for root in sorted(path for path in results_dir.iterdir() if path.is_dir()):
+        if (root / "campaign.json").is_file():
+            run_dirs.extend(root / suite / generator for suite in ("greenfield", "evolution") for generator in ("pi", "opencode"))
+        else:
+            run_dirs.append(root)
+    for run_dir in run_dirs:
         summary_path = run_dir / "summary.json"
         if not summary_path.exists():
             continue
@@ -225,7 +247,7 @@ def collect_benchmark_results(results_dir: Path) -> list[BenchmarkResult]:
             logging.error("Error in path %s. error: %s", summary_path, e, exc_info=True)
             raise
         tasks = [task for task in payload.get("tasks", []) if isinstance(task, dict)]
-        benchmark_results.append(parse_summary(run_dir.name, payload, tasks))
+        benchmark_results.append(parse_summary(run_dir.relative_to(results_dir).as_posix(), payload, tasks))
 
     benchmark_results.sort(
         key=lambda result: (
@@ -333,7 +355,8 @@ def parse_summary(
         difficulty: calculate_score(
             task
             for task in tasks
-            if str(task.get("task_id", "")).startswith(f"{difficulty}-")
+            if task.get("difficulty") == difficulty or (
+                task.get("difficulty") is None and str(task.get("task_id", "")).startswith(f"{difficulty}-"))
         )
         for difficulty in DIFFICULTIES
     }
@@ -373,6 +396,7 @@ def parse_summary(
         earned_points=earned_points,
         available_points=available_points,
         calibration=parse_calibration_speed(payload.get("calibration")),
+        suite=str(payload.get("suite", "greenfield")),
     )
 
 
@@ -538,14 +562,15 @@ def render_markdown(
         f"- Results directory: `{results_dir}`",
         f"- Configuration groups: `{len(grouped_results)}`",
         "",
-        "| Rank | Model | Publisher | Quantization | KV Cache | Model Size | Context Size | Speed Pi (tok/s) | Speed OpenCode (tok/s) | SCORE PI | SCORE OPENCODE | Avg Score | Max Score |",
-        "| ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Rank | Model | Suite | Publisher | Quantization | KV Cache | Model Size | Context Size | Speed Pi (tok/s) | Speed OpenCode (tok/s) | SCORE PI | SCORE OPENCODE | Avg Score | Max Score |",
+        "| ---: | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
 
     for rank, g in enumerate(grouped_results, start=1):
         lines.append(
             f"| {rank} "
             f"| {markdown_code(g.model)} "
+            f"| {markdown_code(g.suite)} "
             f"| {markdown_code(g.publisher or 'n/a')} "
             f"| {markdown_code(g.quantization or 'n/a')} "
             f"| {markdown_code(g.kv_cache_quantization or 'n/a')} "
@@ -598,6 +623,7 @@ def render_html_row_grouped(rank: int, g: GroupedResult) -> str:
         f'      <tr '
         f'data-rank="{rank}" '
         f'data-model="{escape_attr(g.model)}" '
+        f'data-suite="{escape_attr(g.suite)}" '
         f'data-publisher="{escape_attr(g.publisher or "")}" '
         f'data-quantization="{escape_attr(g.quantization or "")}" '
         f'data-kv-cache-quant="{escape_attr(g.kv_cache_quantization or "")}" '
@@ -613,6 +639,7 @@ def render_html_row_grouped(rank: int, g: GroupedResult) -> str:
         f'data-search="{escape_attr(search_text)}">'
         f'<td class="numeric">{rank}</td>'
         f'<td class="model"><button class="model-button" type="button" data-model-filter="{escape_attr(g.model)}">{escape_html(g.model)}</button></td>'
+        f'<td>{escape_html(g.suite)}</td>'
         f'<td>{escape_html(g.publisher or "n/a")}</td>'
         f'<td>{escape_html(g.quantization or "n/a")}</td>'
         f'<td>{escape_html(g.kv_cache_quantization or "n/a")}</td>'
@@ -1348,6 +1375,7 @@ def render_html(
               <tr>
                 <th class="numeric" data-key="rank" data-type="number">Rank</th>
                 <th data-key="model" data-type="text">Model</th>
+                <th data-key="suite" data-type="text">Suite</th>
                 <th data-key="publisher" data-type="text">Publisher</th>
                 <th data-key="quantization" data-type="text">Quantization</th>
                 <th data-key="kvCacheQuant" data-type="text">KV Cache</th>

@@ -1,0 +1,48 @@
+id: "evolution-easy-002"
+name: "Add filtered and ordered catalog search"
+suite: "evolution"
+role: "scored"
+version: "1"
+difficulty: "easy"
+language: "csharp"
+dotnet_version: "8"
+project_type: "webapi"
+build_project: "Catalog.csproj"
+public_files:
+  - "Catalog.csproj"
+  - "README.md"
+  - "src/Program.cs"
+  - "src/Models/Product.cs"
+  - "src/Domain/ProductStore.cs"
+  - "src/Controllers/ProductsController.cs"
+editable_files:
+  - "src/*.cs"
+hidden_tests:
+  - "regression/Regression.Tests.csproj"
+  - "regression/UnitTests.cs"
+  - "feature/Feature.Tests.csproj"
+  - "feature/UnitTests.cs"
+build_command: "dotnet build Catalog.csproj --configuration Release"
+test_groups:
+  regression:
+    build_command: "dotnet build tests/regression/Regression.Tests.csproj --configuration Release"
+    test_command: 'dotnet test tests/regression/Regression.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=regression.trx" --results-directory TestResults/regression'
+  feature:
+    build_command: "dotnet build tests/feature/Feature.Tests.csproj --configuration Release"
+    test_command: 'dotnet test tests/feature/Feature.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=feature.trx" --results-directory TestResults/feature'
+score:
+  compile: 0
+  tests:
+    query_filters_names: 2
+    query_combines_category_and_name: 2
+    query_orders_names_and_ties: 2
+    query_orders_prices_and_ties: 2
+    query_rejects_invalid_sorting: 1
+    query_reflects_crud_without_mutating_state: 1
+  regression:
+    old_crud_returns_payloads_and_locations: 1
+    old_validation_and_duplicate_ids_are_preserved: 1
+    old_updates_preserve_routes_and_replace_products: 1
+    old_deletes_and_default_order_are_preserved: 1
+    old_application_instances_are_isolated: 1
+

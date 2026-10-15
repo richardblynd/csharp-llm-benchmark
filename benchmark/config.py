@@ -67,6 +67,7 @@ class BenchmarkConfig:
     evaluation_workers: int = 1
     generator: str = "opencode"
     calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
+    suite: str = "greenfield"
 
 
 @dataclass(frozen=True)
@@ -208,6 +209,7 @@ def load_config(path: Path | None) -> AppConfig:
             ),
         ),
         benchmark=BenchmarkConfig(
+            suite=str(benchmark_data.get("suite", "greenfield")),
             difficulty=_optional_string(benchmark_data.get("difficulty")),
             output_dir=Path(
                 str(benchmark_data.get("output_dir", BenchmarkConfig.output_dir))
@@ -457,6 +459,7 @@ def apply_cli_overrides(
     discovery_enabled: bool | None = None,
     calibration_enabled: bool | None = None,
     concurrency_calibration_enabled: bool | None = None,
+    suite: str | None = None,
 ) -> AppConfig:
     updated = AppConfig(
         llm=LlmConfig(
@@ -505,6 +508,7 @@ def apply_cli_overrides(
             ),
         ),
         benchmark=BenchmarkConfig(
+            suite=suite if suite is not None else config.benchmark.suite,
             calibration=replace(
                 config.benchmark.calibration,
                 enabled=(
@@ -697,6 +701,8 @@ def _generator_value(value: Any, name: str) -> str:
 
 
 def _validate_config(config: AppConfig) -> None:
+    if config.benchmark.suite not in {"greenfield", "evolution", "all"}:
+        raise ValueError("benchmark.suite must be 'greenfield', 'evolution', or 'all'")
     calibration = config.benchmark.calibration
     if not math.isfinite(calibration.safety_factor) or calibration.safety_factor < 1:
         raise ValueError("benchmark.calibration.safety_factor must be finite and at least 1")

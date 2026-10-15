@@ -1,0 +1,43 @@
+id: evolution-discovery-medium-001
+name: "Integrate JSON into the report exporter"
+difficulty: medium
+suite: evolution
+role: discovery
+version: "1"
+language: csharp
+dotnet_version: "8"
+project_type: classlib
+build_project: Reports.csproj
+editable_files:
+  - "src/*.cs"
+public_files:
+  - README.md
+  - Reports.csproj
+  - src/Reports.cs
+hidden_tests:
+  - feature/Feature.Tests.csproj
+  - feature/UnitTests.cs
+  - regression/Regression.Tests.csproj
+  - regression/UnitTests.cs
+build_command: "dotnet build Reports.csproj --configuration Release"
+test_groups:
+  feature:
+    build_command: "dotnet build tests/feature/Feature.Tests.csproj --configuration Release"
+    test_command: 'dotnet test tests/feature/Feature.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=feature.trx" --results-directory TestResults/feature'
+  regression:
+    build_command: "dotnet build tests/regression/Regression.Tests.csproj --configuration Release"
+    test_command: 'dotnet test tests/regression/Regression.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=regression.trx" --results-directory TestResults/regression'
+score:
+  compile: 0
+  tests:
+    json_is_integrated_in_the_default_service: 4
+    json_formatter_implements_the_existing_contract: 4
+    json_preserves_order_duplicates_and_escaping: 4
+    json_numbers_are_independent_of_culture: 4
+    json_registration_does_not_bypass_custom_selection: 4
+  regression:
+    old_text_output_and_empty_output_are_preserved: 1
+    old_csv_quoting_and_empty_output_are_preserved: 1
+    old_null_and_unknown_format_validation_is_preserved: 1
+    old_constructor_validation_is_preserved: 1
+    old_custom_formatters_are_snapshotted_and_used: 1

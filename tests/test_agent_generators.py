@@ -41,10 +41,11 @@ class AgentGeneratorTests(unittest.TestCase):
             pi=PiConfig(version="test-pi"),
         )
 
-    def test_example_and_default_select_opencode(self):
+    def test_example_selects_complete_campaign_and_defaults_stay_compatible(self):
         config = load_config(Path("config.example.yaml"))
-        self.assertEqual(config.benchmark.generator, "opencode")
-        self.assertIsInstance(create_solution_generator(config), OpenCodeGenerator)
+        self.assertEqual(config.benchmark.generator, "all")
+        self.assertEqual(config.benchmark.suite, "all")
+        self.assertIsInstance(create_solution_generator(self.config), OpenCodeGenerator)
         self.assertEqual(BenchmarkConfig().generator, "opencode")
 
     def test_cli_and_config_reject_removed_generator(self):
@@ -89,6 +90,30 @@ class AgentGeneratorTests(unittest.TestCase):
             config = replace(self.config, **{section: replace(getattr(self.config, section), version=None)})
             with self.assertRaises(ValueError):
                 apply_cli_overrides(config, generator="all")
+
+    def test_both_generators_keep_dotnet_state_off_the_host_home_mount(self):
+        task = cli.load_tasks("easy")[0]
+        for generator in ("pi", "opencode"):
+            for create in (False, True):
+                with self.subTest(generator=generator, create=create), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    workspace, home, install = root / "workspace", root / "home", root / "install"
+                    workspace.mkdir()
+                    home.mkdir()
+                    binary = install / "node_modules/.bin/pi"
+                    binary.parent.mkdir(parents=True)
+                    binary.touch()
+                    if generator == "pi":
+                        instance = PiGenerator(self.config)
+                        with patch.object(instance, "_pi_install_dir", return_value=install):
+                            command = instance._pi_docker_command(workspace, home, container_name="test", create=create)
+                    else:
+                        instance = OpenCodeGenerator(self.config)
+                        with patch.object(instance, "_opencode_install_dir", return_value=install):
+                            command = instance._opencode_docker_command(task, workspace, home, container_name="test", create=create)
+                    environments = [command[i + 1] for i, value in enumerate(command) if value == "--env"]
+                    self.assertIn("DOTNET_CLI_HOME=/tmp/benchmark-dotnet", environments)
+                    self.assertIn(f"type=bind,source={home.resolve()},target=/home/benchmark", command)
 
     def test_resume_does_not_infer_removed_generator(self):
         with tempfile.TemporaryDirectory() as directory:

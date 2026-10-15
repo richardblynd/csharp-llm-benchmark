@@ -1,0 +1,53 @@
+id: "evolution-medium-001"
+name: "Add atomic reservation rescheduling"
+suite: "evolution"
+role: "scored"
+version: "1"
+difficulty: "medium"
+language: "csharp"
+dotnet_version: "8"
+project_type: "webapi"
+build_project: "Reservations.csproj"
+public_files:
+  - "Reservations.csproj"
+  - "README.md"
+  - "src/Program.cs"
+  - "src/Models/ReservationDto.cs"
+  - "src/Domain/CreateResult.cs"
+  - "src/Domain/ReservationStore.cs"
+  - "src/Controllers/ReservationsController.cs"
+editable_files:
+  - "src/*.cs"
+hidden_tests:
+  - "regression/Regression.Tests.csproj"
+  - "regression/UnitTests.cs"
+  - "feature/Feature.Tests.csproj"
+  - "feature/UnitTests.cs"
+build_command: "dotnet build Reservations.csproj --configuration Release"
+test_groups:
+  regression:
+    build_command: "dotnet build tests/regression/Regression.Tests.csproj --configuration Release"
+    test_command: 'dotnet test tests/regression/Regression.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=regression.trx" --results-directory TestResults/regression'
+  feature:
+    build_command: "dotnet build tests/feature/Feature.Tests.csproj --configuration Release"
+    test_command: 'dotnet test tests/feature/Feature.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=feature.trx" --results-directory TestResults/feature'
+score:
+  compile: 0
+  tests:
+    reschedule_updates_interval_and_preserves_id: 2
+    reschedule_moves_rooms_and_frees_old_slot: 3
+    conflicting_reschedule_preserves_original: 3
+    invalid_reschedule_preserves_original: 2
+    unknown_reservation_returns_404: 2
+    reschedule_allows_self_and_adjacent_intervals: 2
+    concurrent_reschedules_prevent_double_booking: 2
+    creation_and_rescheduling_share_conflict_detection: 2
+    concurrent_reads_never_lose_reservation: 2
+  regression:
+    existing_post_returns_created_payload_and_location: 1
+    existing_validation_rejects_bad_input: 1
+    existing_duplicate_ids_are_rejected: 1
+    existing_conflicts_and_adjacency_are_preserved: 1
+    existing_room_isolation_and_order_are_preserved: 1
+    existing_reads_and_app_instances_are_isolated: 1
+    existing_concurrent_creates_prevent_double_booking: 1

@@ -1,0 +1,53 @@
+id: "evolution-medium-002"
+name: "Add ordered notification fallback"
+suite: "evolution"
+role: "scored"
+version: "1"
+difficulty: "medium"
+language: "csharp"
+dotnet_version: "8"
+project_type: "classlib"
+build_project: "Notifications.csproj"
+public_files:
+  - "Notifications.csproj"
+  - "README.md"
+  - "src/NotificationMessage.cs"
+  - "src/NotificationDeliveryResult.cs"
+  - "src/INotificationChannel.cs"
+  - "src/Channels.cs"
+  - "src/NotificationRouter.cs"
+  - "src/NotificationService.cs"
+editable_files:
+  - "src/*.cs"
+hidden_tests:
+  - "regression/Regression.Tests.csproj"
+  - "regression/UnitTests.cs"
+  - "feature/Feature.Tests.csproj"
+  - "feature/UnitTests.cs"
+build_command: "dotnet build Notifications.csproj --configuration Release"
+test_groups:
+  regression:
+    build_command: "dotnet build tests/regression/Regression.Tests.csproj --configuration Release"
+    test_command: 'dotnet test tests/regression/Regression.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=regression.trx" --results-directory TestResults/regression'
+  feature:
+    build_command: "dotnet build tests/feature/Feature.Tests.csproj --configuration Release"
+    test_command: 'dotnet test tests/feature/Feature.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=feature.trx" --results-directory TestResults/feature'
+score:
+  compile: 0
+  tests:
+    fallback_stops_after_first_success: 4
+    fallback_records_unavailable_and_throwing_channels: 3
+    fallback_handles_empty_and_all_failed_routes: 2
+    fallback_preserves_duplicate_channel_names: 2
+    fallback_returns_immutable_attempt_snapshots: 2
+    fallback_keeps_concurrent_calls_independent: 3
+    welcome_service_uses_fallback: 4
+  regression:
+    old_send_uses_every_channel_in_order: 1
+    old_send_reports_unavailable_channels: 1
+    old_send_contains_channel_exceptions: 1
+    old_send_supports_custom_results_and_duplicates: 1
+    old_router_snapshots_and_validates_channels: 1
+    old_welcome_service_keeps_its_message_and_fanout: 1
+    old_messages_and_null_validation_are_preserved: 1
+

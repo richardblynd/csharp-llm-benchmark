@@ -1,0 +1,54 @@
+id: "evolution-hard-001"
+name: "Add transactional SQLite stock reservations"
+suite: "evolution"
+role: "scored"
+version: "1"
+difficulty: "hard"
+language: "csharp"
+dotnet_version: "8"
+project_type: "classlib"
+build_project: "Inventory.csproj"
+public_files:
+  - "Inventory.csproj"
+  - "README.md"
+  - "src/Models.cs"
+  - "src/InventoryService.cs"
+  - "src/InventoryService.Schema.cs"
+  - "src/InventoryService.Rules.cs"
+editable_files:
+  - "src/*.cs"
+hidden_tests:
+  - "regression/Regression.Tests.csproj"
+  - "regression/UnitTests.cs"
+  - "feature/Feature.Tests.csproj"
+  - "feature/UnitTests.cs"
+build_command: "dotnet build Inventory.csproj --configuration Release"
+test_groups:
+  regression:
+    build_command: "dotnet build tests/regression/Regression.Tests.csproj --configuration Release"
+    test_command: 'dotnet test tests/regression/Regression.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=regression.trx" --results-directory TestResults/regression'
+  feature:
+    build_command: "dotnet build tests/feature/Feature.Tests.csproj --configuration Release"
+    test_command: 'dotnet test tests/feature/Feature.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=feature.trx" --results-directory TestResults/feature'
+score:
+  compile: 0
+  tests:
+    reservations_track_available_stock_without_changing_total: 4
+    reservation_ids_are_idempotent_and_immutable: 3
+    releases_are_idempotent_and_restore_availability: 3
+    failed_reservations_leave_all_state_unchanged: 3
+    old_adjustments_cannot_consume_reserved_stock: 4
+    old_transfers_cannot_consume_reserved_stock: 3
+    reservations_persist_across_service_instances: 3
+    concurrent_connections_cannot_overreserve: 3
+    cancelled_reservation_operations_leave_state_unchanged: 2
+    reservation_operations_preserve_movement_history: 2
+  regression:
+    old_initialization_products_and_normalization_are_preserved: 1
+    old_adjustments_history_and_inclusive_filters_are_preserved: 1
+    old_transfers_update_both_products_atomically: 1
+    old_transfer_failures_roll_back_balance_and_history: 1
+    old_validation_and_cancellation_are_preserved: 1
+    old_connection_ownership_and_schema_reuse_are_preserved: 1
+    old_database_failures_roll_back_transactions: 1
+
